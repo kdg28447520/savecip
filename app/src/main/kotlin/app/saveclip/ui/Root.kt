@@ -99,7 +99,19 @@ fun SaveClipRoot() {
         ) {
             composable("browser") { BrowserScreen() }
             composable("queue") { QueueScreen() }
-            composable("library") { LibraryScreen(onPlay = { uri -> nav.navigate("player?uri=${Uri.encode(uri)}") }) }
+            composable("library") {
+                LibraryScreen(
+                    onPlay = { uri -> nav.navigate("player?uri=${Uri.encode(uri)}") },
+                    onOpenPage = { url ->
+                        container.incoming.offer(url)
+                        nav.navigate("browser") {
+                            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                )
+            }
             composable("settings") { SettingsScreen() }
             composable(
                 route = "player?uri={uri}",

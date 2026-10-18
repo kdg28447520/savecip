@@ -15,7 +15,15 @@
 - 큐는 일시정지·이어받기·재시도를 지원합니다. Android 14 이상은 사용자가 시작한 데이터 전송 작업(`JobScheduler.setUserInitiated`, `RUN_USER_INITIATED_JOBS`)으로 긴 받기를 돌리고, 그 미만은 WorkManager와 `dataSync` 포그라운드 서비스를 유지합니다.
 - 다른 앱의 공유(`ACTION_SEND` text/plain)와 링크 열기(`ACTION_VIEW` http/https)는 주소창으로 들어옵니다. 복사한 링크 제안은 설정에서 켠 경우에만 클립보드를 읽으며, 기본값은 꺼짐입니다.
 - 저장은 MediaStore `IS_PENDING`을 거쳐 `Movies/SaveClip`에 넣고, 보관함에서 Media3 ExoPlayer로 재생합니다.
-- 설정에서 Wi-Fi(비과금 네트워크)만 받기, 동시 조각 수, 복사한 링크 제안을 바꿉니다.
+- 설정에서 Wi-Fi(비과금 네트워크)만 받기, 동시 조각 수, 복사한 링크 제안, 데스크톱 User-Agent, 광고·추적 차단을 바꿉니다.
+- 탭마다 WebView `saveState`를 두고, 북마크·방문 기록·홈 바로가기를 둡니다. 기본 바로가기에 유튜브는 없습니다.
+- 광고·추적 차단은 Peter Lowe의 공개 호스트 목록을 선택적으로 쓰며, 사이트별 예외가 있습니다. 유튜브 차단은 이 설정으로 풀리지 않습니다.
+- 플레이어는 배속, 밝기·소리·탐색 제스처, 방향 고정, 이어 보기, PiP, 자막 트랙을 지원합니다.
+- 음성만 저장은 `MediaExtractor` / `MediaMuxer`로 m4a에 담습니다. 큰 이미지는 `Pictures/SaveClip`에 저장합니다.
+- 보관함에서 이름 바꾸기, 여러 개 삭제(Android 11+는 `createDeleteRequest`), FileProvider 공유, 저장해 둔 페이지 주소로 다시 받기를 합니다.
+- 비공개 폴더는 앱 전용 저장소이고 `BiometricPrompt` 또는 기기 잠금으로만 엽니다.
+- 원격 정책 JSON은 서명 확인 뒤에 차단 도메인을 추가만 합니다. 원격 스크립트는 실행하지 않습니다.
+- 알림에 일시정지·취소·열기 버튼이 있고, 처음 실행하면 두 단계 안내를 보여 줍니다.
 - 주소 분석. `m.naver.com/shorts`, `clip.naver.com`, `naver.me`, `tv.naver.com` 클립은 공개 카드 API의 점진적 MP4(또는 보호되지 않은 HLS)만 고릅니다. Widevine 등 보호된 재생 정보는 받지 않습니다.
 - 분석이 실패해도 앱은 닫히지 않고 한국어 안내를 보여 줍니다. 처리되지 않은 예외는 마지막 오류 기록으로 남기고 설정에서 공유할 수 있습니다.
 
@@ -83,7 +91,8 @@ JVM에서 확인합니다.
 - 유튜브 영상 다운로드는 유튜브 이용약관과 Play 정책에 어긋납니다. 이 앱은 해당 호스트를 탐색과 수신 모두에서 거절합니다.
 - DRM을 우회하지 않습니다. Widevine·PlayReady·FairPlay·SAMPLE-AES·AES-128·`ContentProtection`·`#EXT-X-KEY`는 받지 않습니다. 이런 우회는 DMCA와 국내 저작권법상 기술적 보호조치 무력화에 해당할 수 있습니다.
 - Play의 지적재산권 정책은 이용자가 권리를 가진 콘텐츠만 받도록 요구합니다. 권한 없는 복제·배포를 돕는 앱은 거절될 수 있습니다.
-- 계정, 자체 서버, 추적 SDK가 없습니다. 요청은 사용자가 연 페이지와 그 미디어 주소로만 나갑니다.
+- 계정, 자체 서버, 추적 SDK가 없습니다. 요청은 사용자가 연 페이지와 그 미디어 주소로만 나갑니다. 원격 정책 주소(`PolicySource.DOCUMENT_URL`)는 비어 있습니다. 게시자가 정적 JSON 주소를 넣기 전에는 받지 않습니다.
+- 원격 정책은 `addedDomains`와 `notice`만 읽습니다. 본문은 SHA256withRSA로 서명한 뒤 `X-SaveClip-Signature` 헤더에 싣습니다. 공개키는 `core/src/main/resources/policy/policy-public.pem`이고, 개인키는 저장소에 없습니다. `script`, `javascript`, `allowDomains`, `unblock` 같은 키가 있으면 문서 전체를 버립니다. 내장 유튜브 차단은 원격 목록으로 지워지지 않습니다.
 - Android 15의 `dataSync` 포그라운드 서비스는 하루 사용 시간에 제한이 있습니다. Android 14 이상에서 사용자가 누른 받기는 사용자 시작 데이터 전송 작업으로 이 제한 밖입니다. 그 작업 등록이 거절되면 WorkManager로 넘깁니다.
 
 ## 한계

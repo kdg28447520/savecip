@@ -6,13 +6,16 @@ import androidx.work.Configuration
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
+import app.saveclip.core.browser.HostBlocklist
 import app.saveclip.core.detect.defaultExtensionlessProbe
 import app.saveclip.core.extract.defaultPageMediaExtractor
 import app.saveclip.crash.CrashStore
 import app.saveclip.data.AppDatabase
+import app.saveclip.data.BrowserRepository
 import app.saveclip.data.SettingsStore
 import app.saveclip.download.DownloadRepository
 import app.saveclip.download.DownloadWorker
+import app.saveclip.policy.PolicyRefresh
 import app.saveclip.storage.LibraryRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +58,9 @@ class AppContainer(val app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val repository = DownloadRepository(app, database.downloadDao(), settings, messages)
     val library = LibraryRepository(app, database.downloadDao())
+    val browser = BrowserRepository(database)
+    val blocklist: HostBlocklist by lazy { HostBlocklist.bundled() }
+    val policyRefresh = PolicyRefresh(app, settings, messages)
 }
 
 class SaveClipApp : Application(), Configuration.Provider {
@@ -68,6 +74,8 @@ class SaveClipApp : Application(), Configuration.Provider {
         instance = this
         container.scope.launch {
             runCatching { container.repository.recoverInterrupted() }
+            runCatching { container.browser.seedShortcutsIfEmpty() }
+            runCatching { container.policyRefresh.refreshIfDue() }
         }
     }
 

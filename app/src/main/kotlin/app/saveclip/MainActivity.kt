@@ -2,10 +2,10 @@ package app.saveclip
 
 import android.content.Intent
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.fragment.app.FragmentActivity
 import app.saveclip.share.SharedIntent
 import app.saveclip.ui.SaveClipRoot
 import app.saveclip.ui.theme.SaveClipTheme
@@ -14,7 +14,7 @@ val LocalContainer = staticCompositionLocalOf<AppContainer> {
     error("AppContainer가 없습니다")
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()

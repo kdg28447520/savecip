@@ -63,7 +63,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.saveclip.LocalContainer
+import app.saveclip.core.download.Delivery
+import kotlinx.coroutines.launch
 import app.saveclip.browser.BrowserViewModel
+import app.saveclip.browser.DetectedImage
 import app.saveclip.data.AppSettings
 import app.saveclip.browser.DetectedMedia
 import app.saveclip.browser.fileLabel
@@ -85,24 +88,31 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
     val loadingChoice by model.loadingChoice.collectAsState()
     val analyzing by model.analyzing.collectAsState()
     val clipboardSuggestion by model.clipboardSuggestion.collectAsState()
+    val tabs by model.tabs.collectAsState()
+    val activeTab by model.activeTabId.collectAsState()
+    val images by model.images.collectAsState()
     val container = LocalContainer.current
     val settings by container.settings.settings.collectAsState(initial = AppSettings())
     var sheet by remember { mutableStateOf(false) }
+    var pendingDelivery by remember { mutableStateOf(Delivery.VIDEO) }
+    var menu by remember { mutableStateOf(false) }
+    var bookmarks by remember { mutableStateOf(false) }
+    var history by remember { mutableStateOf(false) }
     var pending by remember { mutableStateOf<DetectedMedia?>(null) }
     val context = LocalContext.current
 
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val item = pending
         pending = null
-        if (granted && item != null) model.enqueue(item)
+        if (granted && item != null) model.enqueue(item, pendingDelivery)
     }
     val storage = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val item = pending
         pending = null
-        if (granted && item != null) model.enqueue(item)
+        if (granted && item != null) model.enqueue(item, pendingDelivery)
     }
 
-    fun enqueue(item: DetectedMedia) {
+    fun enqueue(item: DetectedMedia, delivery: String = Delivery.VIDEO) {
         val needsNotification = Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         val needsStorage = Build.VERSION.SDK_INT <= 28 &&
@@ -110,14 +120,20 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
         when {
             needsNotification -> {
                 pending = item
+                pendingDelivery = delivery
                 notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
             needsStorage -> {
                 pending = item
+                pendingDelivery = delivery
                 storage.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
-            else -> model.enqueue(item)
+            else -> model.enqueue(item, delivery)
         }
+    }
+
+    fun enqueueImage(image: DetectedImage) {
+        model.enqueueImage(image)
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -168,7 +184,32 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                         )
                     }
                 }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) {
+                        TabStrip(
+                            tabs = tabs,
+                            activeId = activeTab,
+                            onSelect = model::selectTab,
+                            onClose = model::closeTab,
+                            onNew = model::newTab,
+                        )
+                    }
+                    TextButton(onClick = { menu = true }) { Text("메뉴") }
+                    BrowserMenu(
+                        expanded = menu,
+                        desktop = settings.desktopSite,
+                        onDismiss = { menu = false },
+                        onBookmark = model::addBookmark,
+                        onShowBookmarks = { bookmarks = true },
+                        onShowHistory = { history = true },
+                        onDesktop = { enabled ->
+                            container.scope.launch { container.settings.setDesktopSite(enabled) }
+                        },
+                        onException = model::toggleSiteException,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = address,
                     onValueChange = model::onAddressChange,
@@ -226,7 +267,23 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (!hasPage) {
-                    EmptyBrowser()
+                    Column(Modifier.fillMaxSize()) {
+                        EmptyBrowser()
+                        Box(Modifier.weight(1f)) {
+                        HomeGrid(
+                            onOpen = model::submit,
+                            onAdd = { label, url ->
+                                container.scope.launch {
+                                    val added = container.browser.addShortcut(label, url)
+                                    container.messages.post(if (added) "바로가기를 넣었어요" else "이 주소는 바로가기에 넣을 수 없어요")
+                                }
+                            },
+                            onRemove = { id ->
+                                container.scope.launch { container.browser.deleteShortcut(id) }
+                            },
+                        )
+                        }
+                    }
                 } else {
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
@@ -259,7 +316,7 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                 }
             }
         }
-        if (items.isNotEmpty() && !blocked) {
+        if ((items.isNotEmpty() || images.isNotEmpty()) && !blocked) {
             Box(Modifier.align(Alignment.BottomEnd).padding(20.dp)) {
                 Button(
                     onClick = { sheet = true },
@@ -267,7 +324,7 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                     contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
                 ) {
                     MarkDown(androidx.compose.ui.graphics.Color.White, Modifier.size(18.dp))
-                    Text("  ${items.size}", modifier = Modifier.padding(start = 4.dp))
+                    Text("  ${items.size + images.size}", modifier = Modifier.padding(start = 4.dp))
                 }
             }
         }
@@ -295,10 +352,23 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                         onExpand = { model.ensureChoices(item) },
                         onSelect = { model.select(item.url, it) },
                         onDownload = { enqueue(item) },
+                        onAudio = { enqueue(item, Delivery.AUDIO) },
                     )
+                }
+                items(images, key = { "image-" + it.url }) { image ->
+                    ImageRow(image) { enqueueImage(image) }
                 }
             }
         }
+    }
+    if (bookmarks) {
+        BookmarkSheet(onOpen = { model.submit(it); bookmarks = false }, onClose = { bookmarks = false })
+    }
+    if (history) {
+        HistorySheet(onOpen = { model.submit(it); history = false }, onClose = { history = false })
+    }
+    FirstRunDialog(settings) {
+        container.scope.launch { container.settings.setHintSeen(true) }
     }
 }
 
@@ -306,7 +376,7 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
 private fun EmptyBrowser() {
     Column(
         Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(28.dp)
             .widthIn(max = 560.dp),
         verticalArrangement = Arrangement.Center,
@@ -330,6 +400,7 @@ private fun DetectedRow(
     onExpand: () -> Unit,
     onSelect: (String) -> Unit,
     onDownload: () -> Unit,
+    onAudio: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -367,8 +438,62 @@ private fun DetectedRow(
                 }
             }
         }
-        FilledTonalButton(onClick = onDownload, modifier = Modifier.padding(top = 6.dp)) {
-            Text("받기")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalButton(onClick = onDownload, modifier = Modifier.padding(top = 6.dp)) {
+                Text("받기")
+            }
+            FilledTonalButton(onClick = onAudio, modifier = Modifier.padding(top = 6.dp)) {
+                Text("음성만")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageRow(image: DetectedImage, onDownload: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
+        Text("사진", color = MaterialTheme.colorScheme.primary)
+        Text(fileLabel(image.url), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        FilledTonalButton(onClick = onDownload, modifier = Modifier.padding(top = 6.dp)) { Text("사진 받기") }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BookmarkSheet(onOpen: (String) -> Unit, onClose: () -> Unit) {
+    val container = LocalContainer.current
+    val rows by container.browser.bookmarks().collectAsState(initial = emptyList())
+    ModalBottomSheet(onDismissRequest = onClose) {
+        Text("북마크", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 20.dp))
+        LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
+            items(rows, key = { it.id }) { row ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { onOpen(row.url) }, modifier = Modifier.weight(1f)) {
+                        Text(row.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    TextButton(onClick = { container.scope.launch { container.browser.deleteBookmark(row.id) } }) { Text("삭제") }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistorySheet(onOpen: (String) -> Unit, onClose: () -> Unit) {
+    val container = LocalContainer.current
+    val rows by container.browser.history().collectAsState(initial = emptyList())
+    ModalBottomSheet(onDismissRequest = onClose) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("방문 기록", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            TextButton(onClick = { container.scope.launch { container.browser.clearHistory() } }) { Text("모두 지우기") }
+        }
+        LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
+            items(rows, key = { it.id }) { row ->
+                TextButton(onClick = { onOpen(row.url) }, modifier = Modifier.fillMaxWidth()) {
+                    Text(row.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
     }
 }

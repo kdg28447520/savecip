@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -15,6 +17,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import app.saveclip.core.download.Delivery
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -47,6 +50,8 @@ data class DownloadEntity(
     val outputUri: String?,
     val headersJson: String,
     val createdAt: Long,
+    @ColumnInfo(defaultValue = "'video'")
+    val delivery: String = Delivery.VIDEO,
 )
 
 @Dao
@@ -100,13 +105,30 @@ interface DownloadDao {
     suspend fun markFailed(id: String, message: String): Int
 }
 
-@Database(entities = [DownloadEntity::class], version = 1, exportSchema = false)
+@Database(
+    entities = [
+        DownloadEntity::class,
+        BookmarkEntity::class,
+        HistoryEntity::class,
+        ShortcutEntity::class,
+        PlaybackEntity::class,
+        BlockExceptionEntity::class,
+    ],
+    version = 2,
+    exportSchema = false,
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun downloadDao(): DownloadDao
+    abstract fun bookmarkDao(): BookmarkDao
+    abstract fun historyDao(): HistoryDao
+    abstract fun shortcutDao(): ShortcutDao
+    abstract fun playbackDao(): PlaybackDao
+    abstract fun exceptionDao(): BlockExceptionDao
 
     companion object {
         fun create(context: Context): AppDatabase {
             return Room.databaseBuilder(context, AppDatabase::class.java, "saveclip.db")
+                .addMigrations(MIGRATION_1_2)
                 .fallbackToDestructiveMigration()
                 .build()
         }
@@ -117,6 +139,10 @@ data class AppSettings(
     val wifiOnly: Boolean = false,
     val parallelism: Int = 4,
     val suggestCopiedLink: Boolean = false,
+    val desktopSite: Boolean = false,
+    val blockAds: Boolean = false,
+    val hintSeen: Boolean = false,
+    val policyFetchedAt: Long = 0L,
 )
 
 class SettingsStore(context: Context) {
@@ -129,6 +155,10 @@ class SettingsStore(context: Context) {
             wifiOnly = prefs[WIFI] ?: false,
             parallelism = (prefs[PARALLEL] ?: 4).coerceIn(1, 6),
             suggestCopiedLink = prefs[CLIPBOARD] ?: false,
+            desktopSite = prefs[DESKTOP] ?: false,
+            blockAds = prefs[ADS] ?: false,
+            hintSeen = prefs[HINT] ?: false,
+            policyFetchedAt = prefs[POLICY_AT] ?: 0L,
         )
     }
 
@@ -146,9 +176,29 @@ class SettingsStore(context: Context) {
         store.edit { it[CLIPBOARD] = value }
     }
 
+    suspend fun setDesktopSite(value: Boolean) {
+        store.edit { it[DESKTOP] = value }
+    }
+
+    suspend fun setBlockAds(value: Boolean) {
+        store.edit { it[ADS] = value }
+    }
+
+    suspend fun setHintSeen(value: Boolean) {
+        store.edit { it[HINT] = value }
+    }
+
+    suspend fun setPolicyFetchedAt(value: Long) {
+        store.edit { it[POLICY_AT] = value }
+    }
+
     private companion object {
         val WIFI = booleanPreferencesKey("wifi_only")
         val PARALLEL = intPreferencesKey("parallelism")
         val CLIPBOARD = booleanPreferencesKey("suggest_copied_link")
+        val DESKTOP = booleanPreferencesKey("desktop_site")
+        val ADS = booleanPreferencesKey("block_ads")
+        val HINT = booleanPreferencesKey("hint_seen")
+        val POLICY_AT = longPreferencesKey("policy_fetched_at")
     }
 }

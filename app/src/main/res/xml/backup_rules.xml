@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <exclude domain="file" path="work" />
+    <exclude domain="file" path="private" />
     <exclude domain="database" path="saveclip.db" />
 </full-backup-content>

@@ -15,6 +15,8 @@ import androidx.work.workDataOf
 import app.saveclip.SaveClipApp
 import app.saveclip.UserMessageBus
 import app.saveclip.core.detect.MediaKind
+import app.saveclip.core.download.Delivery
+import app.saveclip.core.download.TransferActions
 import app.saveclip.core.download.TransferPolicy
 import app.saveclip.data.DownloadDao
 import app.saveclip.data.DownloadEntity
@@ -35,6 +37,7 @@ data class NewDownload(
     val videoRepresentationId: String?,
     val audioRepresentationId: String?,
     val headers: Map<String, String>,
+    val delivery: String = Delivery.VIDEO,
 )
 
 class DownloadRepository(
@@ -67,6 +70,7 @@ class DownloadRepository(
             outputUri = null,
             headersJson = HeaderCodec.encode(spec.headers),
             createdAt = System.currentTimeMillis(),
+            delivery = Delivery.normalize(spec.delivery),
         )
         dao.upsert(entity)
         enqueueWork(entity)
@@ -141,7 +145,10 @@ class DownloadActionReceiver : BroadcastReceiver() {
         val app = context.applicationContext as SaveClipApp
         app.container.scope.launch {
             try {
-                if (intent.action == ACTION_PAUSE) app.container.repository.pause(id)
+                when (intent.action) {
+                    ACTION_PAUSE, TransferActions.PAUSE -> app.container.repository.pause(id)
+                    TransferActions.CANCEL -> app.container.repository.cancel(id)
+                }
             } finally {
                 pending.finish()
             }

@@ -57,6 +57,18 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch { container.settings.setSuggestCopiedLink(value) }
     }
 
+    fun setDesktop(value: Boolean) {
+        viewModelScope.launch { container.settings.setDesktopSite(value) }
+    }
+
+    fun setBlockAds(value: Boolean) {
+        viewModelScope.launch { container.settings.setBlockAds(value) }
+    }
+
+    fun removeException(host: String) {
+        viewModelScope.launch { container.browser.toggleException(host) }
+    }
+
     private val crashLogFlow = MutableStateFlow(CrashStore.read(container.app))
     val crashLog = crashLogFlow.asStateFlow()
 
@@ -72,6 +84,7 @@ fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
     val crashLog by model.crashLog.collectAsState()
     val context = LocalContext.current
     val container = LocalContainer.current
+    val exceptions by container.browser.exceptions().collectAsState(initial = emptyList())
     Column(
         Modifier
             .fillMaxSize()
@@ -115,6 +128,31 @@ fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Switch(checked = settings.suggestCopiedLink, onCheckedChange = model::setSuggestCopied)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card {
+            Column(Modifier.padding(16.dp)) {
+                Text("데스크톱 사이트", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "브라우저와 받기 요청에 같은 데스크톱 User-Agent를 씁니다.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Switch(checked = settings.desktopSite, onCheckedChange = model::setDesktop)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card {
+            Column(Modifier.padding(16.dp)) {
+                Text("광고·추적 차단", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Peter Lowe의 공개 호스트 목록으로 하위 요청만 빈 응답을 돌려줍니다. 기본값은 꺼짐입니다. 유튜브 차단과는 별개이며, 예외를 켜도 유튜브는 열리지 않아요.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Switch(checked = settings.blockAds, onCheckedChange = model::setBlockAds)
+                exceptions.forEach { row ->
+                    TextButton(onClick = { model.removeException(row.host) }) { Text("${row.host} 예외 지우기") }
+                }
             }
         }
         Spacer(Modifier.height(12.dp))

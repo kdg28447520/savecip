@@ -3,6 +3,7 @@ package app.saveclip.browser
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
@@ -20,9 +21,14 @@ import androidx.lifecycle.viewModelScope
 import app.saveclip.AppContainer
 import app.saveclip.core.BrowserProfile
 import app.saveclip.core.UserMessages
+import app.saveclip.core.browser.AdBlockDecision
+import app.saveclip.core.browser.ImageReport
+import app.saveclip.core.browser.TabLimits
 import app.saveclip.core.detect.MediaClassifier
 import app.saveclip.core.detect.MediaKind
+import app.saveclip.core.download.Delivery
 import app.saveclip.core.net.SharedLinks
+import app.saveclip.core.policy.ExtraBlocks
 import app.saveclip.core.extract.ExtractResult
 import app.saveclip.core.extract.MediaRequestGate
 import app.saveclip.core.extract.RequestDecision
@@ -42,6 +48,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -52,6 +59,19 @@ data class DetectedMedia(
     val pageUrl: String,
     val pageTitle: String,
     val label: String? = null,
+)
+
+data class DetectedImage(
+    val url: String,
+    val pageUrl: String,
+    val pageTitle: String,
+)
+
+data class BrowserTab(
+    val id: String,
+    val title: String,
+    val url: String,
+    val state: Bundle? = null,
 )
 
 object SnifferScript {
@@ -75,12 +95,49 @@ object SnifferScript {
             }
             return items;
           }
+          function largestFromSrcset(srcset) {
+            if (!srcset) return "";
+            var parts = srcset.split(",");
+            var bestUrl = "";
+            var best = -1;
+            for (var i = 0; i < parts.length; i++) {
+              var bits = parts[i].trim().split(/\s+/);
+              if (!bits[0]) continue;
+              var score = 1;
+              if (bits.length > 1) {
+                var desc = bits[bits.length - 1];
+                if (desc.slice(-1) === "w") score = parseInt(desc, 10) || 1;
+                else if (desc.slice(-1) === "x") score = Math.round((parseFloat(desc) || 1) * 1000);
+              }
+              if (score > best) { best = score; bestUrl = bits[0]; }
+            }
+            return bestUrl;
+          }
+          function collectImages() {
+            var imgs = document.querySelectorAll("img");
+            var out = [];
+            for (var i = 0; i < imgs.length; i++) {
+              var el = imgs[i];
+              var srcset = el.getAttribute("srcset") || "";
+              var raw = largestFromSrcset(srcset) || el.currentSrc || el.src || el.getAttribute("src");
+              var url = absolute(raw);
+              if (!url || url.indexOf("blob:") === 0 || url.indexOf("data:") === 0) continue;
+              out.push({
+                url: url,
+                width: el.naturalWidth || el.width || 0,
+                height: el.naturalHeight || el.height || 0,
+                srcset: srcset
+              });
+            }
+            return out;
+          }
           function send() {
             try {
               SaveClipBridge.report(JSON.stringify({
                 title: document.title || "",
                 page: location.href,
-                items: collect()
+                items: collect(),
+                images: collectImages()
               }));
             } catch (error) {}
           }
@@ -154,9 +211,39 @@ class BrowserViewModel(
     private var hiddenClipboardUrl: String? = null
     private val interceptActive = AtomicBoolean(true)
     private val workerInstalled = AtomicBoolean(false)
+    private val tabsFlow = MutableStateFlow(listOf(BrowserTab(UUID.randomUUID().toString(), "새 탭", "")))
+    val tabs = tabsFlow.asStateFlow()
+    private val activeIdFlow = MutableStateFlow(tabsFlow.value.first().id)
+    val activeTabId = activeIdFlow.asStateFlow()
+    private val imagesFlow = MutableStateFlow<List<DetectedImage>>(emptyList())
+    val images = imagesFlow.asStateFlow()
+    @Volatile private var desktopSite = false
+    @Volatile private var blockAds = false
+    @Volatile private var exceptions = emptySet<String>()
 
     var webView: WebView? = null
         private set
+
+    init {
+        viewModelScope.launch {
+            container.database.exceptionDao().observe().collect { rows ->
+                exceptions = rows.map { it.host }.toSet()
+            }
+        }
+        viewModelScope.launch {
+            val initial = runCatching { container.settings.current() }.getOrNull()
+            desktopSite = initial?.desktopSite == true
+            blockAds = initial?.blockAds == true
+            applyAgent(reload = false)
+            container.settings.settings.collect { settings ->
+                blockAds = settings.blockAds
+                if (settings.desktopSite != desktopSite) {
+                    desktopSite = settings.desktopSite
+                    applyAgent(reload = hasPageFlow.value)
+                }
+            }
+        }
+    }
 
     fun onAddressChange(value: String) {
         addressFlow.value = value
@@ -173,7 +260,7 @@ class BrowserViewModel(
             settings.loadWithOverviewMode = true
             settings.builtInZoomControls = true
             settings.displayZoomControls = false
-            settings.userAgentString = BrowserProfile.USER_AGENT
+            settings.userAgentString = BrowserProfile.userAgent(desktopSite)
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             settings.allowFileAccess = false
             isVerticalScrollBarEnabled = false
@@ -199,6 +286,7 @@ class BrowserViewModel(
 
             override fun onReceivedTitle(view: WebView?, title: String?) {
                 titleFlow.value = title.orEmpty()
+                touchActive(title = title.orEmpty())
             }
         }
         created.setDownloadListener { url, _, _, mime, _ ->
@@ -220,6 +308,10 @@ class BrowserViewModel(
         if (YouTubeBlocklist.isBlocked(url)) {
             blockedFlow.value = true
             container.messages.post(UserMessages.YOUTUBE)
+            return
+        }
+        if (ExtraBlocks.isBlocked(url)) {
+            container.messages.post(UserMessages.RIGHTS)
             return
         }
         addressFlow.value = url
@@ -273,10 +365,12 @@ class BrowserViewModel(
         youtubeNotified.set(false)
         blockedFlow.value = false
         itemsFlow.value = emptyList()
+        imagesFlow.value = emptyList()
         choicesFlow.value = emptyMap()
         selectedFlow.value = emptyMap()
         addressFlow.value = url
         pageSnapshot.set(url)
+        touchActive(url = url)
         syncBack()
     }
 
@@ -285,6 +379,14 @@ class BrowserViewModel(
             webView?.evaluateJavascript(SnifferScript.SOURCE, null)
         } catch (_: Throwable) {
             // The page can be gone before the script runs.
+        }
+        val url = webView?.url.orEmpty()
+        val pageTitle = titleFlow.value
+        if (url.startsWith("http")) {
+            touchActive(url = url, title = pageTitle)
+            viewModelScope.launch {
+                runCatching { container.browser.visit(url, pageTitle.ifBlank { url }) }
+            }
         }
         syncBack()
     }
@@ -382,7 +484,7 @@ class BrowserViewModel(
         selectedFlow.update { it + (mediaUrl to choiceId) }
     }
 
-    fun enqueue(item: DetectedMedia) {
+    fun enqueue(item: DetectedMedia, delivery: String = Delivery.VIDEO) {
         if (protectedPage.get()) {
             container.messages.post(UserMessages.PROTECTED)
             return
@@ -401,6 +503,7 @@ class BrowserViewModel(
                         videoRepresentationId = if (item.kind == MediaKind.DASH) choice?.id else null,
                         audioRepresentationId = null,
                         headers = headerMap(item.pageUrl, item.url),
+                        delivery = delivery,
                     ),
                 )
             } catch (cancelled: CancellationException) {
@@ -431,19 +534,34 @@ class BrowserViewModel(
                     if (decision.youtube) onYouTube(mainFrame)
                     blockedResponse()
                 }
-                is RequestDecision.Observe -> {
-                    onMedia(decision.url, null, decision.pageUrl, title.value)
-                    null
+                else -> {
+                    if (ExtraBlocks.isBlocked(url)) {
+                        if (mainFrame) onRights()
+                        return blockedResponse()
+                    }
+                    if (AdBlockDecision.shouldBlock(blockAds, mainFrame, url, pageUrl, container.blocklist, exceptions)) {
+                        return emptyResponse()
+                    }
+                    when (decision) {
+                        is RequestDecision.Observe -> {
+                            onMedia(decision.url, null, decision.pageUrl, title.value)
+                            null
+                        }
+                        is RequestDecision.Probe -> {
+                            scheduleProbe(decision.url, decision.pageUrl, headers)
+                            null
+                        }
+                        else -> null
+                    }
                 }
-                is RequestDecision.Probe -> {
-                    scheduleProbe(decision.url, decision.pageUrl, headers)
-                    null
-                }
-                RequestDecision.Allow -> null
             }
         } catch (_: Throwable) {
             null
         }
+    }
+
+    fun onRights() {
+        container.messages.post(UserMessages.RIGHTS)
     }
 
     fun considerClipboard(text: String?) {
@@ -523,10 +641,27 @@ class BrowserViewModel(
             val page = obj.optString("page")
             val title = obj.optString("title")
             if (title.isNotBlank()) main.post { titleFlow.value = title }
-            val items = obj.optJSONArray("items") ?: return
-            for (index in 0 until items.length()) {
-                val item = items.optJSONObject(index) ?: continue
-                onMedia(item.optString("url"), item.optString("mime"), page, title)
+            val items = obj.optJSONArray("items")
+            if (items != null) {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    onMedia(item.optString("url"), item.optString("mime"), page, title)
+                }
+            }
+            val found = ImageReport.urls(json, page.ifBlank { pageSnapshot.get() })
+            if (found.isNotEmpty()) {
+                val pageTitle = title.ifBlank { titleFlow.value }
+                main.post {
+                    imagesFlow.update { current ->
+                        val merged = current.toMutableList()
+                        found.forEach { url ->
+                            if (merged.none { it.url == url }) {
+                                merged += DetectedImage(url, page.ifBlank { pageSnapshot.get() }, pageTitle)
+                            }
+                        }
+                        merged.takeLast(20)
+                    }
+                }
             }
         } catch (_: Throwable) {
             // Bridge payloads are untrusted page data.
@@ -535,7 +670,7 @@ class BrowserViewModel(
 
     private fun headerMap(pageUrl: String, mediaUrl: String): Map<String, String> {
         val headers = linkedMapOf(
-            "User-Agent" to BrowserProfile.USER_AGENT,
+            "User-Agent" to BrowserProfile.userAgent(desktopSite),
             "Accept" to "*/*",
             "Accept-Language" to "ko-KR,ko;q=0.9,en;q=0.5",
         )
@@ -543,6 +678,173 @@ class BrowserViewModel(
         val cookie = runCatching { CookieManager.getInstance().getCookie(mediaUrl) }.getOrNull()
         if (!cookie.isNullOrBlank()) headers["Cookie"] = cookie
         return headers
+    }
+
+    fun newTab() {
+        if (!TabLimits.canAdd(tabsFlow.value.size)) {
+            container.messages.post("탭은 8개까지 열 수 있어요")
+            return
+        }
+        saveActive()
+        val tab = BrowserTab(UUID.randomUUID().toString(), "새 탭", "")
+        tabsFlow.update { it + tab }
+        activeIdFlow.value = tab.id
+        show(tab)
+    }
+
+    fun selectTab(id: String) {
+        if (id == activeIdFlow.value) return
+        saveActive()
+        val next = tabsFlow.value.firstOrNull { it.id == id } ?: return
+        activeIdFlow.value = id
+        show(next)
+    }
+
+    fun closeTab(id: String) {
+        val current = tabsFlow.value
+        if (current.size <= 1) {
+            val fresh = BrowserTab(UUID.randomUUID().toString(), "새 탭", "")
+            tabsFlow.value = listOf(fresh)
+            activeIdFlow.value = fresh.id
+            show(fresh)
+            return
+        }
+        if (id == activeIdFlow.value) saveActive()
+        val index = current.indexOfFirst { it.id == id }.coerceAtLeast(0)
+        val remaining = current.filter { it.id != id }
+        tabsFlow.value = remaining
+        if (activeIdFlow.value == id) {
+            val neighbor = remaining[index.coerceAtMost(remaining.lastIndex)]
+            activeIdFlow.value = neighbor.id
+            show(neighbor)
+        }
+    }
+
+    fun addBookmark() {
+        val url = pageSnapshot.get().ifBlank { addressFlow.value }
+        viewModelScope.launch {
+            val added = runCatching { container.browser.addBookmark(titleFlow.value, url) }.getOrDefault(false)
+            container.messages.post(if (added) "북마크에 넣었어요" else "이 페이지는 북마크할 수 없어요")
+        }
+    }
+
+    fun toggleSiteException() {
+        val host = YouTubeBlocklist.hostOf(pageSnapshot.get().ifBlank { addressFlow.value }) ?: return
+        viewModelScope.launch {
+            when (runCatching { container.browser.toggleException(host) }.getOrNull()) {
+                true -> container.messages.post("이 사이트는 광고 차단 예외예요")
+                false -> container.messages.post("이 사이트 예외를 지웠어요")
+                null -> container.messages.post("이 주소는 예외로 둘 수 없어요")
+            }
+        }
+    }
+
+    fun enqueueImage(image: DetectedImage) {
+        viewModelScope.launch {
+            try {
+                if (YouTubeBlocklist.isBlocked(image.url) || YouTubeBlocklist.isBlocked(image.pageUrl)) {
+                    container.messages.post(UserMessages.YOUTUBE)
+                    return@launch
+                }
+                if (ExtraBlocks.isBlocked(image.url) || ExtraBlocks.isBlocked(image.pageUrl)) {
+                    container.messages.post(UserMessages.RIGHTS)
+                    return@launch
+                }
+                container.repository.enqueue(
+                    NewDownload(
+                        mediaUrl = image.url,
+                        pageUrl = image.pageUrl,
+                        title = image.pageTitle.ifBlank { "사진" },
+                        kind = MediaKind.PROGRESSIVE_MP4,
+                        qualityLabel = "이미지",
+                        variantUrl = null,
+                        videoRepresentationId = null,
+                        audioRepresentationId = null,
+                        headers = headerMap(image.pageUrl, image.url),
+                        delivery = Delivery.IMAGE,
+                    ),
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                container.messages.post(UserMessages.ENQUEUE_FAILED)
+            }
+        }
+    }
+
+    private fun saveActive() {
+        val web = webView ?: return
+        val bundle = Bundle()
+        runCatching { web.saveState(bundle) }
+        val id = activeIdFlow.value
+        val currentUrl = web.url?.takeIf { it.startsWith("http") } ?: addressFlow.value
+        tabsFlow.update { list ->
+            list.map { tab ->
+                if (tab.id == id) {
+                    tab.copy(
+                        title = titleFlow.value.ifBlank { tab.title },
+                        url = currentUrl,
+                        state = bundle,
+                    )
+                } else {
+                    tab
+                }
+            }
+        }
+    }
+
+    private fun show(tab: BrowserTab) {
+        val web = runCatching { obtainWebView() }.getOrNull() ?: return
+        itemsFlow.value = emptyList()
+        imagesFlow.value = emptyList()
+        choicesFlow.value = emptyMap()
+        selectedFlow.value = emptyMap()
+        blockedFlow.value = false
+        protectedPage.set(false)
+        val restored = tab.state?.let { runCatching { web.restoreState(it) }.getOrNull() }
+        if (restored != null) {
+            val url = tab.url
+            addressFlow.value = url
+            titleFlow.value = tab.title
+            hasPageFlow.value = url.startsWith("http")
+            pageSnapshot.set(url)
+        } else if (tab.url.startsWith("http")) {
+            addressFlow.value = tab.url
+            titleFlow.value = tab.title
+            hasPageFlow.value = true
+            pageSnapshot.set(tab.url)
+            runCatching { web.loadUrl(tab.url) }
+        } else {
+            addressFlow.value = ""
+            titleFlow.value = ""
+            hasPageFlow.value = false
+            pageSnapshot.set("")
+            progressFlow.value = 0
+            runCatching { web.loadUrl("about:blank") }
+        }
+        syncBack()
+    }
+
+    private fun touchActive(url: String? = null, title: String? = null) {
+        val id = activeIdFlow.value
+        tabsFlow.update { list ->
+            list.map { tab ->
+                if (tab.id != id) {
+                    tab
+                } else {
+                    tab.copy(
+                        url = url ?: tab.url,
+                        title = title?.ifBlank { tab.title } ?: tab.title,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun applyAgent(reload: Boolean) {
+        val web = webView ?: return
+        web.settings.userAgentString = BrowserProfile.userAgent(desktopSite)
+        if (reload && hasPageFlow.value) runCatching { web.reload() }
     }
 
     override fun onCleared() {
@@ -582,6 +884,10 @@ private class SaveClipWebViewClient(
                 model.onYouTube(request.isForMainFrame)
                 return true
             }
+            if (ExtraBlocks.isBlocked(url)) {
+                model.onRights()
+                return true
+            }
             false
         } catch (_: Throwable) {
             true
@@ -606,6 +912,17 @@ private class SaveClipWebViewClient(
         model.syncBack()
     }
 
+}
+
+private fun emptyResponse(): WebResourceResponse {
+    return WebResourceResponse(
+        "text/plain",
+        "utf-8",
+        200,
+        "OK",
+        mapOf("Cache-Control" to "no-store"),
+        ByteArrayInputStream(ByteArray(0)),
+    )
 }
 
 private fun blockedResponse(): WebResourceResponse {

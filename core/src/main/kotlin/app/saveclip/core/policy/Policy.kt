@@ -10,6 +10,8 @@ class ExecutableBlockedException : Exception(UserMessages.EXECUTABLE)
 
 class ProtectedMediaException : Exception(UserMessages.PROTECTED)
 
+class RightsBlockedException : Exception(UserMessages.RIGHTS)
+
 object YouTubeBlocklist {
     private val roots = listOf(
         "youtube.com",
@@ -93,5 +95,6 @@ object DownloadGuard {
     fun checkUrl(url: String) {
         if (YouTubeBlocklist.isBlocked(url)) throw YouTubeBlockedException()
         if (ExecutableGuard.isBlockedUrl(url)) throw ExecutableBlockedException()
+        if (ExtraBlocks.isBlocked(url)) throw RightsBlockedException()
     }
 }
