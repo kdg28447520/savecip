@@ -27,6 +27,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import app.saveclip.AppContainer
 import app.saveclip.LocalContainer
 import app.saveclip.core.UserMessages
+import app.saveclip.core.detect.Notices
 import app.saveclip.data.AppSettings
 import app.saveclip.crash.CrashStore
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -79,7 +80,7 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
 }
 
 @Composable
-fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
+fun SettingsScreen(onBack: () -> Unit = {}, model: SettingsViewModel = settingsModel()) {
     val settings by model.settings.collectAsState()
     val crashLog by model.crashLog.collectAsState()
     val context = LocalContext.current
@@ -91,13 +92,14 @@ fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
     ) {
+        TextButton(onClick = onBack) { Text("뒤로") }
         Text("설정", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
         Card {
             Column(Modifier.padding(16.dp)) {
                 Text("Wi-Fi에서만 받기", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "요금이 없는 네트워크에서만 큐를 진행합니다.",
+                    "모바일 데이터로는 받지 않아요",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Switch(checked = settings.wifiOnly, onCheckedChange = model::setWifi)
@@ -124,7 +126,7 @@ fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
             Column(Modifier.padding(16.dp)) {
                 Text("복사한 링크 제안", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "앱이 앞에 올 때 클립보드의 http 주소를 한 번 읽고 열지 묻습니다. 기본값은 꺼짐입니다. 켜 두면 안드로이드가 붙여넣기 알림을 띄울 수 있어요.",
+                    "앱을 열면 복사한 영상 링크를 보여줘요. 기본값은 꺼짐입니다. 켜 두면 안드로이드가 붙여넣기 알림을 띄울 수 있어요.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Switch(checked = settings.suggestCopiedLink, onCheckedChange = model::setSuggestCopied)
@@ -153,6 +155,19 @@ fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
                 exceptions.forEach { row ->
                     TextButton(onClick = { model.removeException(row.host) }) { Text("${row.host} 예외 지우기") }
                 }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card {
+            Column(Modifier.padding(16.dp)) {
+                Text("저작권", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                Text(Notices.COPYRIGHT)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "개인정보 처리방침 주소는 아직 연결하지 않았어요.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         Spacer(Modifier.height(12.dp))

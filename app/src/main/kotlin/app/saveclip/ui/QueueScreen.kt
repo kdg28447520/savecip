@@ -1,6 +1,7 @@
 package app.saveclip.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -44,31 +46,94 @@ class QueueViewModel(private val repository: DownloadRepository) : ViewModel() {
     fun pause(id: String) = viewModelScope.launch { repository.pause(id) }
     fun resume(id: String) = viewModelScope.launch { repository.resume(id) }
     fun cancel(id: String) = viewModelScope.launch { repository.cancel(id) }
+    fun pauseAll(ids: List<String>) = viewModelScope.launch { ids.forEach { repository.pause(it) } }
 }
 
 @Composable
-fun QueueScreen(model: QueueViewModel = queueModel()) {
-    val tasks by model.tasks.collectAsState()
-    if (tasks.isEmpty()) {
-        Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
-            Text("대기열이 비어 있어요", style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "탐색에서 영상을 고르면 여기에서 진행, 일시정지, 이어받기를 볼 수 있습니다.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+fun DownloadsScreen(
+    onPlay: (String) -> Unit,
+    onOpenPage: (String) -> Unit,
+    onBrowse: () -> Unit,
+    queue: QueueViewModel = queueModel(),
+) {
+    val tasks by queue.tasks.collectAsState()
+    Column(Modifier.fillMaxSize()) {
+        Text(
+            "다운로드",
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        )
+        if (tasks.isNotEmpty()) {
+            QueueGroups(
+                tasks = tasks,
+                onPause = queue::pause,
+                onResume = queue::resume,
+                onCancel = queue::cancel,
+                onPauseAll = queue::pauseAll,
+                onOpenPage = onOpenPage,
+                modifier = Modifier.heightIn(max = 360.dp),
             )
         }
-        return
+        Box(Modifier.weight(1f)) {
+            LibraryScreen(
+                onPlay = onPlay,
+                onOpenPage = onOpenPage,
+                section = LibrarySection.FILES,
+                onBrowse = if (tasks.isEmpty()) onBrowse else null,
+                quietEmpty = tasks.isNotEmpty(),
+            )
+        }
     }
-    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        items(tasks, key = { it.id }) { task ->
-            QueueCard(
-                task = task,
-                onPause = { model.pause(task.id) },
-                onResume = { model.resume(task.id) },
-                onCancel = { model.cancel(task.id) },
-            )
+}
+
+@Composable
+private fun QueueGroups(
+    tasks: List<DownloadEntity>,
+    onPause: (String) -> Unit,
+    onResume: (String) -> Unit,
+    onCancel: (String) -> Unit,
+    onPauseAll: (List<String>) -> Unit,
+    onOpenPage: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val running = tasks.filter { it.status == DownloadStatuses.RUNNING }
+    val waiting = tasks.filter { it.status == DownloadStatuses.QUEUED || it.status == DownloadStatuses.PAUSED }
+    val failed = tasks.filter { it.status == DownloadStatuses.FAILED }
+    LazyColumn(
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (running.isNotEmpty()) {
+            item(key = "running-head") {
+                SectionHead("받는 중 · ${running.size}") {
+                    TextButton(onClick = { onPauseAll(running.map { it.id }) }) { Text("모두 일시정지") }
+                }
+            }
+            items(running, key = { it.id }) { task ->
+                QueueCard(task, { onPause(task.id) }, { onResume(task.id) }, { onCancel(task.id) }, onOpenPage)
+            }
         }
+        if (waiting.isNotEmpty()) {
+            item(key = "waiting-head") { SectionHead("대기 · ${waiting.size}") }
+            items(waiting, key = { it.id }) { task ->
+                QueueCard(task, { onPause(task.id) }, { onResume(task.id) }, { onCancel(task.id) }, onOpenPage)
+            }
+        }
+        if (failed.isNotEmpty()) {
+            item(key = "failed-head") { SectionHead("실패 · ${failed.size}") }
+            items(failed, key = { it.id }) { task ->
+                QueueCard(task, { onPause(task.id) }, { onResume(task.id) }, { onCancel(task.id) }, onOpenPage)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionHead(title: String, trailing: @Composable () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        trailing()
     }
 }
 
@@ -78,6 +143,7 @@ private fun QueueCard(
     onPause: () -> Unit,
     onResume: () -> Unit,
     onCancel: () -> Unit,
+    onOpenPage: (String) -> Unit,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
@@ -113,13 +179,33 @@ private fun QueueCard(
                     Text(detail, modifier = Modifier.padding(top = 6.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            task.errorMessage?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
+            if (task.status == DownloadStatuses.FAILED) {
+                Text(
+                    failureCopy(task.errorMessage),
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                val done = progressDetail(task)
+                if (done.isNotBlank()) {
+                    Text(done, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+                }
+            } else {
+                task.errorMessage?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
+                }
             }
             Row {
                 when (task.status) {
                     DownloadStatuses.RUNNING, DownloadStatuses.QUEUED -> TextButton(onClick = onPause) { Text("일시정지") }
-                    DownloadStatuses.PAUSED, DownloadStatuses.FAILED -> TextButton(onClick = onResume) { Text("이어받기") }
+                    DownloadStatuses.PAUSED -> TextButton(onClick = onResume) { Text("이어받기") }
+                    DownloadStatuses.FAILED -> {
+                        val expired = isExpired(task.errorMessage)
+                        if (expired && task.pageUrl.startsWith("http")) {
+                            TextButton(onClick = { onOpenPage(task.pageUrl) }) { Text("페이지 다시 열기") }
+                        } else {
+                            TextButton(onClick = onResume) { Text("다시 받기") }
+                        }
+                    }
                 }
                 TextButton(onClick = onCancel) { Text("취소") }
             }
@@ -127,8 +213,29 @@ private fun QueueCard(
     }
 }
 
+private fun failureCopy(message: String?): String {
+    val text = message.orEmpty()
+    return when {
+        text.contains("공간") || text.contains("space", ignoreCase = true) -> "저장 공간이 부족해요"
+        isExpired(text) -> "링크가 만료됐어요"
+        text.isBlank() -> "받지 못했어요"
+        else -> text
+    }
+}
+
+private fun isExpired(message: String?): Boolean {
+    val text = message.orEmpty()
+    return text.contains("만료") || text.contains("404") || text.contains("410") || text.contains("expired", ignoreCase = true)
+}
+
+private fun progressDetail(task: DownloadEntity): String {
+    if (task.bytesTotal <= 0L || task.bytesDone <= 0L) return ""
+    val percent = (100 * task.bytesDone / task.bytesTotal).coerceIn(0, 100)
+    return "$percent% · ${formatBytes(task.bytesDone)} / ${formatBytes(task.bytesTotal)}"
+}
+
 private fun statusLabel(status: String): String = when (status) {
-    DownloadStatuses.QUEUED -> "대기"
+    DownloadStatuses.QUEUED -> "대기 중"
     DownloadStatuses.RUNNING -> "받는 중"
     DownloadStatuses.PAUSED -> "일시정지"
     DownloadStatuses.FAILED -> "실패"

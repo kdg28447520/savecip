@@ -32,7 +32,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -49,7 +49,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
@@ -64,22 +63,22 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.saveclip.LocalContainer
+import app.saveclip.core.detect.ClipInput
+import app.saveclip.core.detect.DetectedSheet
+import app.saveclip.core.detect.PhotoInput
+import app.saveclip.core.detect.SheetVariant
 import app.saveclip.core.download.Delivery
 import kotlinx.coroutines.launch
 import app.saveclip.browser.BrowserViewModel
 import app.saveclip.browser.DetectedImage
 import app.saveclip.data.AppSettings
 import app.saveclip.browser.DetectedMedia
-import app.saveclip.core.detect.DetectionList
-import app.saveclip.core.detect.ImageRowInput
-import app.saveclip.core.detect.ListedMedia
 import app.saveclip.core.detect.MediaKind
-import app.saveclip.core.detect.VideoRowInput
 import app.saveclip.ui.theme.Persimmon
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BrowserScreen(model: BrowserViewModel = browserModel()) {
+fun BrowserScreen(onOpenSettings: () -> Unit = {}, model: BrowserViewModel = browserModel()) {
     val address by model.address.collectAsState()
     val progress by model.progress.collectAsState()
     val items by model.items.collectAsState()
@@ -87,8 +86,6 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
     val blocked by model.blocked.collectAsState()
     val canGoBack by model.canGoBack.collectAsState()
     val choices by model.choices.collectAsState()
-    val selected by model.selected.collectAsState()
-    val loadingChoice by model.loadingChoice.collectAsState()
     val analyzing by model.analyzing.collectAsState()
     val clipboardSuggestion by model.clipboardSuggestion.collectAsState()
     val tabs by model.tabs.collectAsState()
@@ -96,10 +93,10 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
     val images by model.images.collectAsState()
     val facts by model.facts.collectAsState()
     val pageTitle by model.title.collectAsState()
+    val protectedUrls by model.protectedUrls.collectAsState()
     val container = LocalContainer.current
     val settings by container.settings.settings.collectAsState(initial = AppSettings())
     var sheet by remember { mutableStateOf(false) }
-    var showTiny by remember { mutableStateOf(false) }
     var pendingDelivery by remember { mutableStateOf(Delivery.VIDEO) }
     var menu by remember { mutableStateOf(false) }
     var bookmarks by remember { mutableStateOf(false) }
@@ -179,15 +176,18 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                             .background(Persimmon),
                         contentAlignment = Alignment.Center,
                     ) {
-                        MarkDown(androidx.compose.ui.graphics.Color.White, Modifier.size(16.dp))
+                        MarkDown(MaterialTheme.colorScheme.onPrimary, Modifier.size(16.dp))
                     }
-                    Column(Modifier.padding(start = 10.dp)) {
+                    Column(Modifier.padding(start = 10.dp).weight(1f)) {
                         Text("세이브클립", style = MaterialTheme.typography.titleMedium)
                         Text(
                             "웹에서 연 영상만 이 기기에 저장합니다",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                    IconButton(onClick = onOpenSettings) {
+                        MarkSliders(MaterialTheme.colorScheme.onSurface)
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -221,7 +221,7 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                     onValueChange = model::onAddressChange,
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    placeholder = { Text("페이지 주소") },
+                    placeholder = { Text("주소 붙여넣기 또는 검색") },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(onGo = { model.submit(address) }),
                     shape = RoundedCornerShape(16.dp),
@@ -254,8 +254,12 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                         Modifier.padding(top = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        Text(
+                            "복사한 링크",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         TextButton(onClick = model::openClipboardSuggestion) {
-                            Text("복사한 링크 열기")
+                            Text("열기")
                         }
                         Text(
                             clipboardHost(clipboardSuggestion.orEmpty()),
@@ -322,87 +326,70 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                 }
             }
         }
-        if ((items.isNotEmpty() || images.isNotEmpty()) && !blocked) {
+        val found = remember(items, images, facts, choices, pageTitle) {
+            DetectedSheet.build(
+                clips = clipInputs(items, pageTitle),
+                photos = photoInputs(images, pageTitle),
+                facts = facts,
+                variants = variantMap(choices),
+            ).let { it.videoCount + it.photoCount }
+        }
+        if (found > 0 && !blocked) {
             Box(Modifier.align(Alignment.BottomEnd).padding(20.dp)) {
                 Button(
                     onClick = { sheet = true },
                     shape = CircleShape,
                     contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
                 ) {
-                    MarkDown(androidx.compose.ui.graphics.Color.White, Modifier.size(18.dp))
-                    Text("  ${items.size + images.size}", modifier = Modifier.padding(start = 4.dp))
+                    MarkDown(MaterialTheme.colorScheme.onPrimary, Modifier.size(18.dp))
+                    Text("받기", modifier = Modifier.padding(start = 6.dp))
+                }
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.inverseSurface),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        found.coerceAtMost(99).toString(),
+                        color = MaterialTheme.colorScheme.inverseOnSurface,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                 }
             }
         }
     }
 
-    LaunchedEffect(sheet, items, images, selected) {
-        if (sheet) model.refreshSizes()
+    LaunchedEffect(sheet) {
+        if (!sheet) return@LaunchedEffect
+        model.refreshSizes()
+        items.filter { it.kind == MediaKind.HLS || it.kind == MediaKind.DASH }.forEach(model::ensureChoices)
     }
     if (sheet) {
-        val arranged = DetectionList.arrange(
-            videos = items.map { VideoRowInput(it.url, it.kind, it.pageTitle.ifBlank { pageTitle }) },
-            images = images.map { ImageRowInput(it.url, it.pageTitle.ifBlank { pageTitle }) },
+        DetectedMediaSheet(
+            clips = clipInputs(items, pageTitle),
+            photos = photoInputs(images, pageTitle),
             facts = facts,
+            variants = variantMap(choices),
+            protectedUrls = protectedUrls,
+            onDismiss = { sheet = false },
+            onDownload = { sourceUrl, variantId, audio ->
+                val item = items.firstOrNull { it.url == sourceUrl } ?: return@DetectedMediaSheet
+                if (!variantId.isNullOrBlank()) model.select(sourceUrl, variantId)
+                enqueue(item, if (audio) Delivery.AUDIO else Delivery.VIDEO)
+                sheet = false
+            },
+            onDownloadPhotos = { urls ->
+                urls.forEach { url -> images.firstOrNull { it.url == url }?.let(::enqueueImage) }
+                sheet = false
+            },
+            onOpenSettings = {
+                sheet = false
+                onOpenSettings()
+            },
         )
-        val videosByUrl = items.associateBy { it.url }
-        val imagesByUrl = images.associateBy { it.url }
-        ModalBottomSheet(onDismissRequest = { sheet = false }) {
-            Text(
-                "감지된 영상",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(horizontal = 20.dp),
-            )
-            Text(
-                "큰 파일부터 보여 드려요. 1MB보다 작은 파일은 접어 둡니다.",
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
-                items(arranged.main, key = { it.key }) { row ->
-                    PresentedRow(
-                        row = row,
-                        item = videosByUrl[row.url],
-                        choices = choices[row.url].orEmpty(),
-                        selectedId = selected[row.url],
-                        loading = loadingChoice == row.url,
-                        muted = false,
-                        onExpand = { videosByUrl[row.url]?.let(model::ensureChoices) },
-                        onSelect = { model.select(row.url, it) },
-                        onDownload = { videosByUrl[row.url]?.let { enqueue(it) } },
-                        onAudio = { videosByUrl[row.url]?.let { enqueue(it, Delivery.AUDIO) } },
-                        onImage = { imagesByUrl[row.url]?.let { enqueueImage(it) } },
-                    )
-                }
-                if (arranged.tinyCount > 0) {
-                    item(key = "tiny-files") {
-                        TextButton(
-                            onClick = { showTiny = !showTiny },
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                        ) {
-                            Text(if (showTiny) "작은 파일 ${arranged.tinyCount}개 접기" else "작은 파일 ${arranged.tinyCount}개")
-                        }
-                    }
-                    if (showTiny) {
-                        items(arranged.tiny, key = { it.key }) { row ->
-                            PresentedRow(
-                                row = row,
-                                item = videosByUrl[row.url],
-                                choices = choices[row.url].orEmpty(),
-                                selectedId = selected[row.url],
-                                loading = loadingChoice == row.url,
-                                muted = true,
-                                onExpand = { videosByUrl[row.url]?.let(model::ensureChoices) },
-                                onSelect = { model.select(row.url, it) },
-                                onDownload = { videosByUrl[row.url]?.let { enqueue(it) } },
-                                onAudio = { videosByUrl[row.url]?.let { enqueue(it, Delivery.AUDIO) } },
-                                onImage = { imagesByUrl[row.url]?.let { enqueueImage(it) } },
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
     if (bookmarks) {
         BookmarkSheet(onOpen = { model.submit(it); bookmarks = false }, onClose = { bookmarks = false })
@@ -434,97 +421,33 @@ private fun EmptyBrowser() {
     }
 }
 
-@Composable
-private fun PresentedRow(
-    row: ListedMedia,
-    item: DetectedMedia?,
-    choices: List<app.saveclip.core.quality.QualityChoice>,
-    selectedId: String?,
-    loading: Boolean,
-    muted: Boolean,
-    onExpand: () -> Unit,
-    onSelect: (String) -> Unit,
-    onDownload: () -> Unit,
-    onAudio: () -> Unit,
-    onImage: () -> Unit,
-) {
-    val typeLabel = row.typeLabel.ifBlank { if (row.video) "MP4" else "사진" }
-    val primary = row.primary.ifBlank { if (row.video) "영상" else "사진" }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .alpha(if (muted) 0.55f else 1f)
-            .padding(horizontal = 20.dp, vertical = 10.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            Text(
-                typeLabel,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.secondaryContainer)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-            )
-            Column(Modifier.padding(start = 8.dp).weight(1f)) {
-                Text(primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                val secondary = row.secondary
-                if (!secondary.isNullOrBlank()) {
-                    Text(
-                        secondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                val meta = row.meta
-                val detail = when {
-                    !meta.isNullOrBlank() -> meta
-                    row.pending -> "크기 확인 중"
-                    else -> null
-                }
-                if (detail != null) {
-                    Text(
-                        detail,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        if (row.video && item != null && (item.kind == MediaKind.HLS || item.kind == MediaKind.DASH)) {
-            if (choices.isEmpty() && !loading) {
-                TextButton(onClick = onExpand) { Text("화질 보기") }
-            }
-            if (loading) {
-                CircularProgressIndicator(Modifier.padding(vertical = 8.dp).size(18.dp), strokeWidth = 2.dp)
-            }
-            if (choices.isNotEmpty()) {
-                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    choices.take(6).forEach { choice ->
-                        FilterChip(
-                            selected = choice.id == selectedId,
-                            onClick = { onSelect(choice.id) },
-                            label = { Text(choice.label) },
-                        )
-                    }
-                }
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (row.video) {
-                FilledTonalButton(onClick = onDownload, modifier = Modifier.padding(top = 6.dp)) {
-                    Text("받기")
-                }
-                FilledTonalButton(onClick = onAudio, modifier = Modifier.padding(top = 6.dp)) {
-                    Text("음성만")
-                }
-            } else {
-                FilledTonalButton(onClick = onImage, modifier = Modifier.padding(top = 6.dp)) {
-                    Text("사진 받기")
-                }
-            }
-        }
+private fun clipInputs(items: List<DetectedMedia>, pageTitle: String): List<ClipInput> {
+    return items.map { item ->
+        ClipInput(
+            url = item.url,
+            kind = item.kind,
+            pageUrl = item.pageUrl,
+            pageTitle = item.pageTitle.ifBlank { pageTitle },
+            posterUrl = item.posterUrl,
+        )
+    }
+}
+
+private fun photoInputs(images: List<DetectedImage>, pageTitle: String): List<PhotoInput> {
+    return images.map { image ->
+        PhotoInput(
+            url = image.url,
+            pageUrl = image.pageUrl,
+            pageTitle = image.pageTitle.ifBlank { pageTitle },
+        )
+    }
+}
+
+private fun variantMap(
+    choices: Map<String, List<app.saveclip.core.quality.QualityChoice>>,
+): Map<String, List<SheetVariant>> {
+    return choices.mapValues { (_, list) ->
+        list.map { choice -> SheetVariant(choice.id, choice.height, choice.bandwidth) }
     }
 }
 

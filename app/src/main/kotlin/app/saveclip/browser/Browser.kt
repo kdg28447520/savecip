@@ -63,6 +63,7 @@ data class DetectedMedia(
     val pageUrl: String,
     val pageTitle: String,
     val label: String? = null,
+    val posterUrl: String? = null,
 )
 
 data class DetectedImage(
@@ -95,7 +96,10 @@ object SnifferScript {
               var raw = el.currentSrc || el.src || el.getAttribute("src");
               var url = absolute(raw);
               if (!url || url.indexOf("blob:") === 0 || url.indexOf("data:") === 0) continue;
-              items.push({ url: url, mime: el.type || el.getAttribute("type") || "" });
+              var poster = "";
+              if (el.tagName === "VIDEO") poster = absolute(el.getAttribute("poster") || "");
+              else if (el.parentElement && el.parentElement.tagName === "VIDEO") poster = absolute(el.parentElement.getAttribute("poster") || "");
+              items.push({ url: url, mime: el.type || el.getAttribute("type") || "", poster: poster });
             }
             return items;
           }
@@ -137,9 +141,15 @@ object SnifferScript {
           }
           function send() {
             try {
+              var og = "";
+              try {
+                var meta = document.querySelector('meta[property="og:image"]');
+                if (meta) og = absolute(meta.getAttribute("content") || "");
+              } catch (error) {}
               SaveClipBridge.report(JSON.stringify({
                 title: document.title || "",
                 page: location.href,
+                ogImage: og,
                 items: collect(),
                 images: collectImages()
               }));
@@ -223,6 +233,10 @@ class BrowserViewModel(
     val images = imagesFlow.asStateFlow()
     private val factsFlow = MutableStateFlow<Map<String, MediaFacts>>(emptyMap())
     val facts = factsFlow.asStateFlow()
+    private val protectedFlow = MutableStateFlow<Set<String>>(emptySet())
+    val protectedUrls = protectedFlow.asStateFlow()
+    private val ogImageFlow = MutableStateFlow("")
+    val ogImage = ogImageFlow.asStateFlow()
     private val sizedVariant = ConcurrentHashMap<String, String?>()
     private val factJobs = ConcurrentHashMap<String, Job>()
     @Volatile private var desktopSite = false
@@ -419,7 +433,7 @@ class BrowserViewModel(
         }
     }
 
-    fun onMedia(url: String, mime: String?, pageUrl: String, pageTitle: String, label: String? = null) {
+    fun onMedia(url: String, mime: String?, pageUrl: String, pageTitle: String, label: String? = null, posterUrl: String? = null) {
         try {
             if (protectedPage.get()) return
             if (YouTubeBlocklist.isBlocked(url) || YouTubeBlocklist.isBlocked(pageUrl)) {
@@ -436,14 +450,24 @@ class BrowserViewModel(
             }
             if (app.saveclip.core.policy.ExecutableGuard.isBlockedUrl(url)) return
             val title = pageTitle.ifBlank { titleFlow.value }
-            val media = DetectedMedia(url, mime.orEmpty(), kind, pageUrl, title, label)
+            val poster = posterUrl?.takeIf { it.startsWith("http") } ?: ogImageFlow.value.takeIf { it.startsWith("http") }
+            val media = DetectedMedia(url, mime.orEmpty(), kind, pageUrl, title, label, poster)
             main.post {
                 var added = false
                 itemsFlow.update { current ->
                     val index = current.indexOfFirst { it.url == url }
                     if (index >= 0) {
-                        if (current[index].label == null && media.label != null) {
-                            current.toMutableList().also { it[index] = media }
+                        val existing = current[index]
+                        val posterUpdate = existing.posterUrl == null && media.posterUrl != null
+                        val labelUpdate = existing.label == null && media.label != null
+                        if (posterUpdate || labelUpdate) {
+                            current.toMutableList().also {
+                                it[index] = existing.copy(
+                                    label = existing.label ?: media.label,
+                                    posterUrl = existing.posterUrl ?: media.posterUrl,
+                                    pageTitle = existing.pageTitle.ifBlank { media.pageTitle },
+                                )
+                            }
                         } else {
                             current
                         }
@@ -479,6 +503,7 @@ class BrowserViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: ProtectedMediaException) {
+                protectedFlow.update { it + item.url }
                 container.messages.post(UserMessages.PROTECTED)
             } catch (_: YouTubeBlockedException) {
                 container.messages.post(UserMessages.YOUTUBE)
@@ -663,12 +688,15 @@ class BrowserViewModel(
             val obj = runCatching { JSONObject(json) }.getOrNull() ?: return
             val page = obj.optString("page")
             val title = obj.optString("title")
+            val og = obj.optString("ogImage")
+            if (og.startsWith("http")) ogImageFlow.value = og
             if (title.isNotBlank()) main.post { titleFlow.value = title }
             val items = obj.optJSONArray("items")
             if (items != null) {
                 for (index in 0 until items.length()) {
                     val item = items.optJSONObject(index) ?: continue
-                    onMedia(item.optString("url"), item.optString("mime"), page, title)
+                    val poster = item.optString("poster").ifBlank { og }
+                    onMedia(item.optString("url"), item.optString("mime"), page, title, posterUrl = poster)
                 }
             }
             val found = ImageReport.urls(json, page.ifBlank { pageSnapshot.get() })
@@ -908,6 +936,8 @@ class BrowserViewModel(
 
     private fun clearFacts() {
         factsFlow.value = emptyMap()
+        protectedFlow.value = emptySet()
+        ogImageFlow.value = ""
         sizedVariant.clear()
         factJobs.values.forEach { it.cancel() }
         factJobs.clear()

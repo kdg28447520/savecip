@@ -27,10 +27,9 @@ import app.saveclip.ui.theme.Persimmon
 private data class Tab(val route: String, val label: String)
 
 private val tabs = listOf(
-    Tab("browser", "탐색"),
-    Tab("queue", "받기"),
-    Tab("library", "보관함"),
-    Tab("settings", "설정"),
+    Tab("browser", "홈"),
+    Tab("downloads", "다운로드"),
+    Tab("private", "비공개"),
 )
 
 @Composable
@@ -77,9 +76,8 @@ fun SaveClipRoot() {
                                 val color = if (selected) Persimmon else MaterialTheme.colorScheme.onSurfaceVariant
                                 when (tab.route) {
                                     "browser" -> MarkBrowse(color)
-                                    "queue" -> MarkDown(color)
-                                    "library" -> MarkFilm(color)
-                                    else -> MarkSliders(color)
+                                    "downloads" -> MarkDown(color)
+                                    else -> MarkLock(color)
                                 }
                             },
                             label = { Text(tab.label) },
@@ -97,10 +95,32 @@ fun SaveClipRoot() {
             startDestination = "browser",
             modifier = androidx.compose.ui.Modifier.padding(padding),
         ) {
-            composable("browser") { BrowserScreen() }
-            composable("queue") { QueueScreen() }
-            composable("library") {
+            composable("browser") {
+                BrowserScreen(onOpenSettings = { nav.navigate("settings") })
+            }
+            composable("downloads") {
+                DownloadsScreen(
+                    onPlay = { uri -> nav.navigate("player?uri=${Uri.encode(uri)}") },
+                    onOpenPage = { url ->
+                        container.incoming.offer(url)
+                        nav.navigate("browser") {
+                            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                    onBrowse = {
+                        nav.navigate("browser") {
+                            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                )
+            }
+            composable("private") {
                 LibraryScreen(
+                    section = LibrarySection.PRIVATE,
                     onPlay = { uri -> nav.navigate("player?uri=${Uri.encode(uri)}") },
                     onOpenPage = { url ->
                         container.incoming.offer(url)
@@ -112,7 +132,7 @@ fun SaveClipRoot() {
                     },
                 )
             }
-            composable("settings") { SettingsScreen() }
+            composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }) }
             composable(
                 route = "player?uri={uri}",
                 arguments = listOf(navArgument("uri") { type = NavType.StringType }),

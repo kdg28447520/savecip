@@ -3,6 +3,7 @@ package app.saveclip.ui
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,12 +24,14 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -38,6 +41,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -51,6 +57,7 @@ import app.saveclip.AppContainer
 import app.saveclip.LocalContainer
 import app.saveclip.core.UserMessages
 import app.saveclip.core.audio.AudioSave
+import app.saveclip.core.detect.Notices
 import app.saveclip.core.library.DeleteMode
 import app.saveclip.core.library.LibraryOps
 import app.saveclip.download.AndroidRemuxer
@@ -73,11 +80,22 @@ class LibraryViewModel(
     val unlocked = unlockedFlow.asStateFlow()
     private val selectedFlow = MutableStateFlow<Set<String>>(emptySet())
     val selected = selectedFlow.asStateFlow()
+    private var privateMode = false
+
+    fun showFiles() {
+        privateMode = false
+        viewModelScope.launch { itemsFlow.value = library.list(includePrivate = false) }
+    }
+
+    fun showPrivate() {
+        privateMode = true
+        viewModelScope.launch {
+            itemsFlow.value = if (unlockedFlow.value) library.listPrivate() else emptyList()
+        }
+    }
 
     fun refresh() {
-        viewModelScope.launch {
-            itemsFlow.value = library.list(includePrivate = unlockedFlow.value)
-        }
+        if (privateMode) showPrivate() else showFiles()
     }
 
     fun unlock() {
@@ -165,20 +183,27 @@ class LibraryViewModel(
     }
 }
 
+enum class LibrarySection { FILES, PRIVATE }
+
 @Composable
 fun LibraryScreen(
     onPlay: (String) -> Unit,
     onOpenPage: (String) -> Unit,
+    section: LibrarySection = LibrarySection.FILES,
+    onBrowse: (() -> Unit)? = null,
+    quietEmpty: Boolean = false,
     model: LibraryViewModel = libraryModel(),
 ) {
     val items by model.items.collectAsState()
     val unlocked by model.unlocked.collectAsState()
     val selected by model.selected.collectAsState()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var renameTarget by remember { mutableStateOf<LibraryItem?>(null) }
     var renameText by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<List<LibraryItem>>(emptyList()) }
     val activity = context as? FragmentActivity
+    val privateFolder = section == LibrarySection.PRIVATE
     val deleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             model.forgetAfterSystemDelete(pendingDelete)
@@ -186,19 +211,46 @@ fun LibraryScreen(
         pendingDelete = emptyList()
     }
 
-    LaunchedEffect(Unit) { model.refresh() }
+    LaunchedEffect(section) {
+        if (privateFolder) model.showPrivate() else model.showFiles()
+    }
+    if (privateFolder) {
+        DisposableEffect(activity) {
+            val window = activity?.window
+            window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            onDispose {
+                window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                model.lock()
+            }
+        }
+        DisposableEffect(lifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_STOP) model.lock()
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
+        if (privateFolder) {
+            Text("비공개", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+            Text(
+                Notices.PRIVATE_FOLDER,
+                modifier = Modifier.padding(horizontal = 16.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = {
-                if (unlocked) {
-                    model.lock()
-                } else if (activity != null) {
-                    promptPrivate(activity, model::unlock) { containerMessage ->
-                        // shown by the prompt callback via activity; message is posted below
+            if (privateFolder) {
+                TextButton(onClick = {
+                    if (unlocked) {
+                        model.lock()
+                    } else if (activity != null) {
+                        promptPrivate(activity, model::unlock) {}
                     }
-                }
-            }) { Text(if (unlocked) "비공개 잠그기" else "비공개 폴더") }
+                }) { Text(if (unlocked) "지금 잠그기" else "잠금 해제") }
+            }
             if (selected.isNotEmpty()) {
                 TextButton(onClick = {
                     val chosen = model.chosen()
@@ -224,14 +276,41 @@ fun LibraryScreen(
                 TextButton(onClick = model::clearSelection) { Text("선택 해제") }
             }
         }
-        if (items.isEmpty()) {
+        if (privateFolder && !unlocked) {
             Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
-                Text("받은 파일이 없어요", style = MaterialTheme.typography.headlineMedium)
+                Text("비공개 폴더", style = MaterialTheme.typography.headlineMedium)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "영상은 영화/SaveClip, 사진은 사진/SaveClip, 음성은 음악/SaveClip 에 저장됩니다.",
+                    "기기 잠금으로 엽니다. 이메일 PIN은 쓰지 않아요.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                TextButton(
+                    onClick = { if (activity != null) promptPrivate(activity, model::unlock) {} },
+                    modifier = Modifier.padding(top = 8.dp),
+                ) { Text("잠금 해제") }
+            }
+            return
+        }
+        if (items.isEmpty()) {
+            Column(Modifier.fillMaxSize().padding(if (quietEmpty) 16.dp else 28.dp), verticalArrangement = Arrangement.Center) {
+                Text(
+                    if (privateFolder) "비공개 파일이 없어요" else if (quietEmpty) "완료된 파일이 없어요" else "아직 받은 영상이 없어요",
+                    style = if (quietEmpty) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineMedium,
+                )
+                if (!quietEmpty) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        if (privateFolder) {
+                            "받은 파일을 여기로 옮기면 갤러리에 보이지 않아요."
+                        } else {
+                            "링크를 붙여넣거나 브라우저에서 영상을 재생하면, 받은 파일이 여기에 모여요."
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (!privateFolder && onBrowse != null) {
+                        Button(onClick = onBrowse, modifier = Modifier.padding(top = 16.dp)) { Text("링크 붙여넣기") }
+                    }
+                }
             }
             return
         }
@@ -276,9 +355,10 @@ fun LibraryScreen(
                         if (!item.mime.startsWith("image")) {
                             TextButton(onClick = { model.saveAudio(item) }) { Text("음성만") }
                         }
-                        if (!item.appPrivate && unlocked) {
+                        if (!item.appPrivate) {
                             TextButton(onClick = {
-                                model.movePrivate(item) { copied ->
+                                val move = {
+                                    model.movePrivate(item) { copied ->
                                     if (Build.VERSION.SDK_INT >= 30 && copied.uri.scheme == "content") {
                                         pendingDelete = listOf(copied)
                                         val request = android.provider.MediaStore.createDeleteRequest(
@@ -289,6 +369,15 @@ fun LibraryScreen(
                                     } else {
                                         model.deleteDirect(listOf(copied))
                                     }
+                                }
+                                }
+                                if (unlocked) {
+                                    move()
+                                } else if (activity != null) {
+                                    promptPrivate(activity, {
+                                        model.unlock()
+                                        move()
+                                    }) {}
                                 }
                             }) { Text("비공개로") }
                         }

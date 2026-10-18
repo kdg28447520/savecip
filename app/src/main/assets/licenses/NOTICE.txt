@@ -1,0 +1,6 @@
+Pretendard
+Copyright (c) 2021, Kil Hyung-jin
+Licensed under the SIL Open Font License, Version 1.1.
+The license text is in pretendard-OFL.txt.
+Reserved Font Name: Pretendard.
+Weights included: 400 Regular, 600 SemiBold, 700 Bold.

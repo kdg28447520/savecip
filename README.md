@@ -8,7 +8,7 @@
 
 - 주소창이 있는 앱 안 브라우저. `shouldInterceptRequest`로 mp4, webm, m3u8, mpd(확장자와 MIME)를 보고, 주입한 스크립트가 `<video>` / `<source>`의 src를 페이지 주소 기준으로 절대 경로로 바꿉니다. 확장자가 없는 주소는 경로·쿼리·Accept가 미디어로 보일 때만 HEAD 또는 1KB `Range`로 Content-Type과 앞바이트(`#EXTM3U`, `<MPD`, `ftyp`)를 확인합니다.
 - Service Worker 요청도 `ServiceWorkerControllerCompat`으로 같은 판별과 유튜브 차단을 통과합니다.
-- 감지 목록은 페이지 제목과 순서로 이름을 보여주고, 파일 크기가 큰 항목을 먼저 둡니다. 크기는 HEAD의 Content-Length 또는 Range의 Content-Range로 확인하고, HLS·DASH는 고른 화질의 대역폭×길이로 약산합니다. 1MB보다 작은 파일은 접어 둡니다. HLS·DASH는 화질을 고를 수 있습니다.
+- 찾은 영상 시트는 같은 영상의 화질을 한 줄로 묶고, 썸네일·페이지 제목·길이·화질 칩과 받기 버튼 하나를 보여 줍니다. 10초보다 짧은 영상은 접어 둡니다. 파일 크기는 HEAD의 Content-Length 또는 Range의 Content-Range로 확인하고, HLS·DASH는 고른 화질의 대역폭×길이로 약산합니다.
 - 직접 mp4/webm은 OkHttp로 받고, User-Agent, Referer, WebView 쿠키를 붙입니다. 큰 파일은 3–6개 `Range` 연결로 나누고, 서버가 구간을 무시하면(200) 연결 하나로 되돌립니다. 일시정지 뒤 이어받기는 구간 파일과 단일 `.part`를 그대로 사용합니다.
 - HLS는 마스터/미디어 재생목록을 읽고, 조각을 동시에(기본 4, 설정 1–6) 받은 뒤 TS 또는 fMP4를 이어 붙입니다. 기기에서는 `MediaExtractor` / `MediaMuxer`로 mp4에 담습니다.
 - DASH는 MPD에서 영상·음성 트랙을 고르고, 초기화 세그먼트와 미디어 세그먼트를 받아 같은 방식으로 합칩니다.
@@ -16,14 +16,14 @@
 - 다른 앱의 공유(`ACTION_SEND` text/plain)와 링크 열기(`ACTION_VIEW` http/https)는 주소창으로 들어옵니다. 복사한 링크 제안은 설정에서 켠 경우에만 클립보드를 읽으며, 기본값은 꺼짐입니다.
 - 저장은 MediaStore `IS_PENDING`을 거쳐 `Movies/SaveClip`에 넣고, 보관함에서 Media3 ExoPlayer로 재생합니다.
 - 설정에서 Wi-Fi(비과금 네트워크)만 받기, 동시 조각 수, 복사한 링크 제안, 데스크톱 User-Agent, 광고·추적 차단을 바꿉니다.
-- 탭마다 WebView `saveState`를 두고, 북마크·방문 기록·홈 바로가기를 둡니다. 기본 바로가기에 유튜브는 없습니다.
+- 탭마다 WebView `saveState`를 두고, 북마크·방문 기록·홈 바로가기를 둡니다. 기본 바로가기는 비어 있고, 다른 회사 로고를 넣지 않습니다. 유튜브 주소는 바로가기로 저장되지 않습니다.
 - 광고·추적 차단은 Peter Lowe의 공개 호스트 목록을 선택적으로 쓰며, 사이트별 예외가 있습니다. 유튜브 차단은 이 설정으로 풀리지 않습니다.
 - 플레이어는 배속, 밝기·소리·탐색 제스처, 방향 고정, 이어 보기, PiP, 자막 트랙을 지원합니다.
 - 음성만 저장은 `MediaExtractor` / `MediaMuxer`로 m4a에 담습니다. 큰 이미지는 `Pictures/SaveClip`에 저장합니다.
 - 보관함에서 이름 바꾸기, 여러 개 삭제(Android 11+는 `createDeleteRequest`), FileProvider 공유, 저장해 둔 페이지 주소로 다시 받기를 합니다.
-- 비공개 폴더는 앱 전용 저장소이고 `BiometricPrompt` 또는 기기 잠금으로만 엽니다.
+- 비공개 폴더는 앱 전용 저장소이고 `BiometricPrompt` 또는 기기 잠금으로만 엽니다. 화면에는 앱을 지우면 파일도 지워진다는 안내가 있고, 그 화면은 `FLAG_SECURE`로 캡처를 막습니다. 하단 이동은 홈, 다운로드, 비공개이고 설정은 홈의 톱니바퀴로 엽니다.
 - 원격 정책 JSON은 서명 확인 뒤에 차단 도메인을 추가만 합니다. 원격 스크립트는 실행하지 않습니다.
-- 알림에 일시정지·취소·열기 버튼이 있고, 처음 실행하면 두 단계 안내를 보여 줍니다.
+- 알림에 일시정지·취소·열기 버튼이 있고, 처음 실행하면 저작권 안내를 포함한 안내를 보여 줍니다. 설정에도 같은 저작권 문장이 있습니다. 글꼴은 SIL OFL 1.1 Pretendard(400/600/700)이며 라이선스 원문은 `assets/licenses`에 있습니다.
 - 주소 분석. `m.naver.com/shorts`, `clip.naver.com`, `naver.me`, `tv.naver.com` 클립은 공개 카드 API의 점진적 MP4(또는 보호되지 않은 HLS)만 고릅니다. Widevine 등 보호된 재생 정보는 받지 않습니다.
 - 분석이 실패해도 앱은 닫히지 않고 한국어 안내를 보여 줍니다. 처리되지 않은 예외는 마지막 오류 기록으로 남기고 설정에서 공유할 수 있습니다.
 

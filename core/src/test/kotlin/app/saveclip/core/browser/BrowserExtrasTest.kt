@@ -20,16 +20,16 @@ class BrowserExtrasTest {
     }
 
     @Test
-    fun defaultShortcutsNeverIncludeYouTube() {
-        assertTrue(HomeShortcuts.defaults.isNotEmpty())
-        HomeShortcuts.defaults.forEach { shortcut ->
-            assertFalse(shortcut.label, YouTubeBlocklist.isBlocked(shortcut.url))
-            assertEquals(shortcut.url, HomeShortcuts.accepted(shortcut.url))
-        }
+    fun defaultShortcutsAreEmpty() {
+        assertTrue(HomeShortcuts.defaults.isEmpty())
+        assertTrue(HomeShortcuts.retiredSeedUrls.none { YouTubeBlocklist.isBlocked(it) })
         val filtered = HomeShortcuts.withoutBlocked(
-            HomeShortcuts.defaults + Shortcut("막힘", "https://www.youtube.com/watch?v=abc"),
+            listOf(
+                Shortcut("직접 추가", "https://vimeo.com/"),
+                Shortcut("막힘", "https://www.youtube.com/watch?v=abc"),
+            ),
         )
-        assertEquals(HomeShortcuts.defaults.size, filtered.size)
+        assertEquals(1, filtered.size)
         assertTrue(filtered.none { YouTubeBlocklist.isBlocked(it.url) })
     }
 

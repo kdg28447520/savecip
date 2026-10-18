@@ -14,13 +14,16 @@ object PageAddress {
 }
 
 object HomeShortcuts {
-    val defaults: List<Shortcut> = listOf(
-        Shortcut("네이버", "https://www.naver.com/"),
-        Shortcut("네이버TV", "https://tv.naver.com/"),
-        Shortcut("비메오", "https://vimeo.com/"),
-        Shortcut("데일리모션", "https://www.dailymotion.com/"),
-        Shortcut("인터넷 아카이브", "https://archive.org/"),
-        Shortcut("위키미디어", "https://commons.wikimedia.org/"),
+    /** No built-in site shortcuts. Users add their own. Third-party names and logos are not shipped. */
+    val defaults: List<Shortcut> = emptyList()
+
+    val retiredSeedUrls: Set<String> = setOf(
+        "https://www.naver.com/",
+        "https://tv.naver.com/",
+        "https://vimeo.com/",
+        "https://www.dailymotion.com/",
+        "https://archive.org/",
+        "https://commons.wikimedia.org/",
     )
 
     fun accepted(url: String): String? = PageAddress.openable(url)

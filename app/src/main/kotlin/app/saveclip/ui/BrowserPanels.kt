@@ -1,17 +1,21 @@
 package app.saveclip.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -25,7 +29,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.saveclip.LocalContainer
@@ -85,6 +92,7 @@ fun HomeGrid(onOpen: (String) -> Unit, onAdd: (String, String) -> Unit, onRemove
     val container = LocalContainer.current
     val shortcuts by container.browser.shortcuts().collectAsState(initial = emptyList())
     var adding by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
     var label by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
     Column(
@@ -94,15 +102,42 @@ fun HomeGrid(onOpen: (String) -> Unit, onAdd: (String, String) -> Unit, onRemove
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("바로가기", style = MaterialTheme.typography.titleMedium)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("바로가기", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            if (shortcuts.isNotEmpty()) {
+                TextButton(onClick = { editing = !editing }) { Text(if (editing) "완료" else "편집") }
+            }
+        }
         Text(
-            "기본 목록에 유튜브는 없습니다. 추가해도 유튜브 주소는 저장되지 않아요.",
+            "기본 바로가기는 비어 있어요. 추가해도 유튜브 주소는 저장되지 않아요.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        shortcuts.forEach { shortcut ->
-            ShortcutCard(shortcut, onOpen, onRemove)
+        val cells: List<ShortcutEntity?> = shortcuts + null
+        cells.chunked(4).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.forEach { shortcut ->
+                    if (shortcut == null) {
+                        LetterTile("추가", "+", Modifier.weight(1f)) { adding = true }
+                    } else {
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            LetterTile(
+                                shortcut.label,
+                                shortcut.label.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                                Modifier.fillMaxWidth(),
+                            ) { onOpen(shortcut.url) }
+                            if (editing) {
+                                TextButton(onClick = { onRemove(shortcut.id) }, modifier = Modifier.heightIn(min = 48.dp)) {
+                                    Text("삭제")
+                                }
+                            }
+                        }
+                    }
+                }
+                repeat(4 - row.size) {
+                    Box(Modifier.weight(1f))
+                }
+            }
         }
-        TextButton(onClick = { adding = true }) { Text("바로가기 추가") }
     }
     if (adding) {
         AlertDialog(
@@ -128,13 +163,26 @@ fun HomeGrid(onOpen: (String) -> Unit, onAdd: (String, String) -> Unit, onRemove
 }
 
 @Composable
-private fun ShortcutCard(shortcut: ShortcutEntity, onOpen: (String) -> Unit, onRemove: (String) -> Unit) {
-    Card(Modifier.clickable { onOpen(shortcut.url) }) {
-        Column(Modifier.padding(12.dp)) {
-            Text(shortcut.label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-            Text(shortcut.url, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TextButton(onClick = { onRemove(shortcut.id) }) { Text("삭제") }
+private fun LetterTile(label: String, letter: String, modifier: Modifier, onClick: () -> Unit) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(letter, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
         }
+        Text(
+            label,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 4.dp),
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
@@ -144,7 +192,7 @@ fun FirstRunDialog(settings: AppSettings, onDone: () -> Unit) {
     var step by remember { mutableIntStateOf(0) }
     AlertDialog(
         onDismissRequest = {},
-        title = { Text("두 단계로 받기") },
+        title = { Text("안내") },
         text = { Text(FirstRunHint.step(step).orEmpty()) },
         confirmButton = {
             TextButton(onClick = {

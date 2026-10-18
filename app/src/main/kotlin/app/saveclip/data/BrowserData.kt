@@ -169,6 +169,10 @@ class BrowserRepository(private val db: AppDatabase) {
     fun exceptions(): Flow<List<BlockExceptionEntity>> = db.exceptionDao().observe()
 
     suspend fun seedShortcutsIfEmpty() {
+        HomeShortcuts.retiredSeedUrls.forEach { url ->
+            val row = db.shortcutDao().byUrl(url) ?: return@forEach
+            db.shortcutDao().delete(row.id)
+        }
         if (db.shortcutDao().count() > 0) return
         HomeShortcuts.defaults.forEachIndexed { index, shortcut ->
             db.shortcutDao().insert(

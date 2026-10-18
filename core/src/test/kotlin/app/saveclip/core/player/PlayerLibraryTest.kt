@@ -3,6 +3,7 @@ package app.saveclip.core.player
 import app.saveclip.core.audio.AudioSave
 import app.saveclip.core.download.Delivery
 import app.saveclip.core.download.TransferActions
+import app.saveclip.core.detect.Notices
 import app.saveclip.core.hint.FirstRunHint
 import app.saveclip.core.library.DeleteMode
 import app.saveclip.core.library.LibraryOps
@@ -76,12 +77,12 @@ class PlayerLibraryTest {
     }
 
     @Test
-    fun firstRunHasTwoSteps() {
-        assertEquals(2, FirstRunHint.steps.size)
-        assertTrue(FirstRunHint.steps[0].contains("재생"))
-        assertTrue(FirstRunHint.steps[1].contains("화질"))
+    fun firstRunStartsWithCopyright() {
+        assertEquals(3, FirstRunHint.steps.size)
+        assertEquals(Notices.COPYRIGHT, FirstRunHint.steps[0])
+        assertTrue(FirstRunHint.steps[1].contains("재생"))
+        assertTrue(FirstRunHint.steps[2].contains("화질"))
         assertFalse(FirstRunHint.isLast(0))
-        assertTrue(FirstRunHint.isLast(1))
-        assertEquals(FirstRunHint.steps[1], FirstRunHint.step(1))
+        assertTrue(FirstRunHint.isLast(2))
     }
 }
