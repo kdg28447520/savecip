@@ -14,6 +14,8 @@
 - 큐는 WorkManager와 `dataSync` 포그라운드 서비스로 진행률을 알리고, 일시정지·이어받기·재시도를 지원합니다.
 - 저장은 MediaStore `IS_PENDING`을 거쳐 `Movies/SaveClip`에 넣고, 보관함에서 Media3 ExoPlayer로 재생합니다.
 - 설정에서 Wi-Fi(비과금 네트워크)만 받기, 동시 조각 수를 바꿉니다.
+- 주소 분석. `m.naver.com/shorts`, `clip.naver.com`, `naver.me`, `tv.naver.com` 클립은 공개 카드 API의 점진적 MP4(또는 보호되지 않은 HLS)만 고릅니다. Widevine 등 보호된 재생 정보는 받지 않습니다.
+- 분석이 실패해도 앱은 닫히지 않고 한국어 안내를 보여 줍니다. 처리되지 않은 예외는 마지막 오류 기록으로 남기고 설정에서 공유할 수 있습니다.
 
 ## 아키텍처
 
