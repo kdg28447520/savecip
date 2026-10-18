@@ -234,12 +234,14 @@ fun LibraryScreen(
 
     Column(Modifier.fillMaxSize()) {
         if (privateFolder) {
-            Text("비공개", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+            Text("비공개 폴더", style = MaterialTheme.typography.displaySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+            InkRule()
             Text(
                 Notices.PRIVATE_FOLDER,
-                modifier = Modifier.padding(horizontal = 16.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                color = MaterialTheme.colorScheme.onSurface,
             )
+            Hairline()
         }
         Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (privateFolder) {

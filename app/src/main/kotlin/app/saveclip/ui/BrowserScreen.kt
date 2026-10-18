@@ -9,7 +9,15 @@ import android.webkit.WebView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,8 +39,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -50,6 +58,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,11 +84,18 @@ import app.saveclip.browser.DetectedImage
 import app.saveclip.data.AppSettings
 import app.saveclip.browser.DetectedMedia
 import app.saveclip.core.detect.MediaKind
-import app.saveclip.ui.theme.Persimmon
+import app.saveclip.ui.theme.LocalMotionEnabled
+import app.saveclip.ui.theme.ScMotion
+import app.saveclip.ui.theme.monoStyle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BrowserScreen(onOpenSettings: () -> Unit = {}, model: BrowserViewModel = browserModel()) {
+fun BrowserScreen(
+    onOpenSettings: () -> Unit = {},
+    onOpenDownloads: () -> Unit = {},
+    onPlay: (String) -> Unit = {},
+    model: BrowserViewModel = browserModel(),
+) {
     val address by model.address.collectAsState()
     val progress by model.progress.collectAsState()
     val items by model.items.collectAsState()
@@ -99,6 +116,7 @@ fun BrowserScreen(onOpenSettings: () -> Unit = {}, model: BrowserViewModel = bro
     var sheet by remember { mutableStateOf(false) }
     var pendingDelivery by remember { mutableStateOf(Delivery.VIDEO) }
     var menu by remember { mutableStateOf(false) }
+    var showTabs by remember { mutableStateOf(false) }
     var bookmarks by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf(false) }
     var pending by remember { mutableStateOf<DetectedMedia?>(null) }
@@ -163,141 +181,100 @@ fun BrowserScreen(onOpenSettings: () -> Unit = {}, model: BrowserViewModel = bro
         }
     }
 
-    BackHandler(enabled = canGoBack && !blocked) { model.goBack() }
+    BackHandler(enabled = sheet) { sheet = false }
+    BackHandler(enabled = !sheet && canGoBack && !blocked) { model.goBack() }
 
-    Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier
-                            .size(28.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Persimmon),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        MarkDown(MaterialTheme.colorScheme.onPrimary, Modifier.size(16.dp))
-                    }
-                    Column(Modifier.padding(start = 10.dp).weight(1f)) {
-                        Text("세이브클립", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "웹에서 연 영상만 이 기기에 저장합니다",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = onOpenSettings) {
-                        MarkSliders(MaterialTheme.colorScheme.onSurface)
-                    }
+    val built = remember(items, images, facts, choices, pageTitle) {
+        DetectedSheet.build(
+            clips = clipInputs(items, pageTitle),
+            photos = photoInputs(images, pageTitle),
+            facts = facts,
+            variants = variantMap(choices),
+        )
+    }
+    val found = built.videoCount + built.photoCount
+    val motion = LocalMotionEnabled.current
+    val scale by animateFloatAsState(if (sheet && motion) 0.928f else 1f, ScMotion.drawerTween(motion), label = "page-scale")
+    val shift by animateDpAsState(if (sheet && motion) 14.dp else 0.dp, ScMotion.drawerTween(motion), label = "page-shift")
+    val corner by animateDpAsState(if (sheet && motion) 8.dp else 0.dp, ScMotion.drawerTween(motion), label = "page-corner")
+    val scrim by animateFloatAsState(if (sheet) 0.5f else 0f, ScMotion.drawerTween(motion), label = "page-scrim")
+
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.onSurface)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationY = shift.toPx()
+                    shape = RoundedCornerShape(corner)
+                    clip = sheet && motion
                 }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) {
-                        TabStrip(
-                            tabs = tabs,
-                            activeId = activeTab,
-                            onSelect = model::selectTab,
-                            onClose = model::closeTab,
-                            onNew = model::newTab,
-                        )
-                    }
-                    TextButton(onClick = { menu = true }) { Text("메뉴") }
-                    BrowserMenu(
-                        expanded = menu,
-                        desktop = settings.desktopSite,
-                        onDismiss = { menu = false },
-                        onBookmark = model::addBookmark,
-                        onShowBookmarks = { bookmarks = true },
-                        onShowHistory = { history = true },
-                        onDesktop = { enabled ->
-                            container.scope.launch { container.settings.setDesktopSite(enabled) }
-                        },
-                        onException = model::toggleSiteException,
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = address,
-                    onValueChange = model::onAddressChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    placeholder = { Text("주소 붙여넣기 또는 검색") },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { model.submit(address) }),
-                    shape = RoundedCornerShape(16.dp),
+                .background(MaterialTheme.colorScheme.background),
+        ) {
+            if (!hasPage) {
+                HomeChrome(
+                    address = address,
+                    analyzing = analyzing,
+                    clipboard = clipboardSuggestion,
+                    onAddress = model::onAddressChange,
+                    onGo = { model.submit(address) },
+                    onAnalyze = { model.analyzeInput(address) },
+                    onPaste = {
+                        val pasted = clipboardText(context)?.trim().orEmpty()
+                        if (pasted.isNotBlank()) model.onAddressChange(pasted)
+                    },
+                    onOpenClip = model::openClipboardSuggestion,
+                    onDismissClip = model::dismissClipboardSuggestion,
+                    onSettings = onOpenSettings,
                 )
-                Row(
-                    Modifier.padding(top = 8.dp).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    FilledTonalButton(
-                        onClick = { model.analyzeInput(address) },
-                        enabled = !analyzing,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(16.dp),
-                    ) {
-                        if (analyzing) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text("분석")
-                        }
-                    }
-                    Button(
-                        onClick = { model.submit(address) },
-                        enabled = !analyzing,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(16.dp),
-                    ) { Text("이동") }
-                }
-                if (clipboardSuggestion != null) {
-                    Row(
-                        Modifier.padding(top = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "복사한 링크",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        TextButton(onClick = model::openClipboardSuggestion) {
-                            Text("열기")
-                        }
-                        Text(
-                            clipboardHost(clipboardSuggestion.orEmpty()),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(onClick = model::dismissClipboardSuggestion) { Text("닫기") }
-                    }
+            } else {
+                BrowserChrome(
+                    address = address,
+                    tabCount = tabs.size,
+                    menu = menu,
+                    desktop = settings.desktopSite,
+                    onClose = model::showHome,
+                    onTabs = { showTabs = !showTabs },
+                    onMenu = { menu = true },
+                    onDismissMenu = { menu = false },
+                    onBookmark = model::addBookmark,
+                    onShowBookmarks = { bookmarks = true },
+                    onShowHistory = { history = true },
+                    onDesktop = { enabled -> container.scope.launch { container.settings.setDesktopSite(enabled) } },
+                    onException = model::toggleSiteException,
+                )
+                if (showTabs) {
+                    TabStrip(tabs, activeTab, model::selectTab, model::closeTab, model::newTab)
                 }
             }
             if (hasPage && progress in 1..99) {
-                LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth())
+                LinearProgressIndicator(
+                    progress = { progress / 100f },
+                    modifier = Modifier.fillMaxWidth().height(2.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                )
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (!hasPage) {
-                    Column(Modifier.fillMaxSize()) {
-                        EmptyBrowser()
-                        Box(Modifier.weight(1f)) {
-                        HomeGrid(
-                            onOpen = model::submit,
-                            onAdd = { label, url ->
-                                container.scope.launch {
-                                    val added = container.browser.addShortcut(label, url)
-                                    container.messages.post(if (added) "바로가기를 넣었어요" else "이 주소는 바로가기에 넣을 수 없어요")
-                                }
-                            },
-                            onRemove = { id ->
-                                container.scope.launch { container.browser.deleteShortcut(id) }
-                            },
-                        )
-                        }
-                    }
+                    HomeGrid(
+                        onOpen = model::submit,
+                        onAdd = { label, url ->
+                            container.scope.launch {
+                                val added = container.browser.addShortcut(label, url)
+                                container.messages.post(if (added) "바로가기를 넣었어요" else "이 주소는 바로가기에 넣을 수 없어요")
+                            }
+                        },
+                        onRemove = { id -> container.scope.launch { container.browser.deleteShortcut(id) } },
+                        onBookmarks = { bookmarks = true },
+                        onOpenDownloads = onOpenDownloads,
+                        onPlay = onPlay,
+                    )
                 } else {
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
-                        factory = { context ->
+                        factory = { viewContext ->
                             model.obtainWebView().also { web ->
                                 (web.parent as? ViewGroup)?.removeView(web)
                                 web.layoutParams = ViewGroup.LayoutParams(
@@ -309,10 +286,7 @@ fun BrowserScreen(onOpenSettings: () -> Unit = {}, model: BrowserViewModel = bro
                     )
                     if (blocked) {
                         Column(
-                            Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.background)
-                                .padding(28.dp),
+                            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(28.dp),
                             verticalArrangement = Arrangement.Center,
                         ) {
                             Text("유튜브는 지원하지 않아요", style = MaterialTheme.typography.titleLarge)
@@ -325,40 +299,58 @@ fun BrowserScreen(onOpenSettings: () -> Unit = {}, model: BrowserViewModel = bro
                     }
                 }
             }
+            if (hasPage) {
+                Row(Modifier.fillMaxWidth().height(56.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    TextButton(onClick = model::goBack, modifier = Modifier.height(48.dp)) { Text("뒤로") }
+                    TextButton(onClick = model::goForward, modifier = Modifier.height(48.dp)) { Text("앞으로") }
+                    TextButton(onClick = model::reload, modifier = Modifier.height(48.dp)) { Text("새로고침") }
+                    TextButton(onClick = model::showHome, modifier = Modifier.height(48.dp)) { Text("홈") }
+                    TextButton(onClick = model::addBookmark, modifier = Modifier.height(48.dp)) { Text("북마크") }
+                }
+            }
         }
-        val found = remember(items, images, facts, choices, pageTitle) {
-            DetectedSheet.build(
+        if (scrim > 0f) {
+            Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = scrim)))
+        }
+        if (found > 0 && !blocked && !sheet) {
+            DetectDock(
+                count = found,
+                videos = built.videoCount,
+                photos = built.photoCount,
+                onOpen = { sheet = true },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 12.dp, vertical = if (hasPage) 68.dp else 12.dp),
+            )
+        }
+        AnimatedVisibility(
+            visible = sheet,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = if (motion) slideInVertically(ScMotion.sheetMorph()) { it } + fadeIn(ScMotion.spec(true, ScMotion.sheetMorph())) else fadeIn(ScMotion.spec(false, ScMotion.sheetMorph())),
+            exit = if (motion) slideOutVertically(androidx.compose.animation.core.tween(ScMotion.Base, easing = ScMotion.Exit)) { it } + fadeOut() else fadeOut(ScMotion.spec(false, ScMotion.sheetMorph())),
+        ) {
+            DetectedMediaSheet(
                 clips = clipInputs(items, pageTitle),
                 photos = photoInputs(images, pageTitle),
                 facts = facts,
                 variants = variantMap(choices),
-            ).let { it.videoCount + it.photoCount }
-        }
-        if (found > 0 && !blocked) {
-            Box(Modifier.align(Alignment.BottomEnd).padding(20.dp)) {
-                Button(
-                    onClick = { sheet = true },
-                    shape = CircleShape,
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
-                ) {
-                    MarkDown(MaterialTheme.colorScheme.onPrimary, Modifier.size(18.dp))
-                    Text("받기", modifier = Modifier.padding(start = 6.dp))
-                }
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .size(22.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.inverseSurface),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        found.coerceAtMost(99).toString(),
-                        color = MaterialTheme.colorScheme.inverseOnSurface,
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            }
+                protectedUrls = protectedUrls,
+                onDismiss = { sheet = false },
+                onDownload = { sourceUrl, variantId, audio ->
+                    val item = items.firstOrNull { it.url == sourceUrl } ?: return@DetectedMediaSheet
+                    if (!variantId.isNullOrBlank()) model.select(sourceUrl, variantId)
+                    enqueue(item, if (audio) Delivery.AUDIO else Delivery.VIDEO)
+                    DownloadPulse.bump()
+                    sheet = false
+                },
+                onDownloadPhotos = { urls ->
+                    urls.forEach { url -> images.firstOrNull { it.url == url }?.let(::enqueueImage) }
+                    DownloadPulse.bump()
+                    sheet = false
+                },
+                onOpenSettings = {
+                    sheet = false
+                    onOpenSettings()
+                },
+            )
         }
     }
 
@@ -366,30 +358,6 @@ fun BrowserScreen(onOpenSettings: () -> Unit = {}, model: BrowserViewModel = bro
         if (!sheet) return@LaunchedEffect
         model.refreshSizes()
         items.filter { it.kind == MediaKind.HLS || it.kind == MediaKind.DASH }.forEach(model::ensureChoices)
-    }
-    if (sheet) {
-        DetectedMediaSheet(
-            clips = clipInputs(items, pageTitle),
-            photos = photoInputs(images, pageTitle),
-            facts = facts,
-            variants = variantMap(choices),
-            protectedUrls = protectedUrls,
-            onDismiss = { sheet = false },
-            onDownload = { sourceUrl, variantId, audio ->
-                val item = items.firstOrNull { it.url == sourceUrl } ?: return@DetectedMediaSheet
-                if (!variantId.isNullOrBlank()) model.select(sourceUrl, variantId)
-                enqueue(item, if (audio) Delivery.AUDIO else Delivery.VIDEO)
-                sheet = false
-            },
-            onDownloadPhotos = { urls ->
-                urls.forEach { url -> images.firstOrNull { it.url == url }?.let(::enqueueImage) }
-                sheet = false
-            },
-            onOpenSettings = {
-                sheet = false
-                onOpenSettings()
-            },
-        )
     }
     if (bookmarks) {
         BookmarkSheet(onOpen = { model.submit(it); bookmarks = false }, onClose = { bookmarks = false })
@@ -403,21 +371,142 @@ fun BrowserScreen(onOpenSettings: () -> Unit = {}, model: BrowserViewModel = bro
 }
 
 @Composable
-private fun EmptyBrowser() {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(28.dp)
-            .widthIn(max = 560.dp),
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text("영상 페이지 주소를 붙여 넣으세요", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(10.dp))
+private fun HomeChrome(
+    address: String,
+    analyzing: Boolean,
+    clipboard: String?,
+    onAddress: (String) -> Unit,
+    onGo: () -> Unit,
+    onAnalyze: () -> Unit,
+    onPaste: () -> Unit,
+    onOpenClip: () -> Unit,
+    onDismissClip: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(24.dp).clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.inverseSurface),
+                contentAlignment = Alignment.Center,
+            ) {
+                MarkDown(MaterialTheme.colorScheme.inverseOnSurface, Modifier.size(14.dp))
+            }
+            Text("SaveClip", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 8.dp).weight(1f))
+            IconButton(onClick = onSettings) { MarkSliders(MaterialTheme.colorScheme.onSurface) }
+        }
         Text(
-            "분석은 주소에서 영상을 찾고, 이동은 페이지를 엽니다. 유튜브는 열 수 없고, 보호된 영상은 받을 수 없어요.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            "링크를 붙여넣고\n화질만 고르세요",
+            style = MaterialTheme.typography.displaySmall,
+            modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
         )
+        Text("영상 주소", style = MaterialTheme.typography.titleSmall)
+        OutlinedTextField(
+            value = address,
+            onValueChange = onAddress,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            singleLine = true,
+            placeholder = { MonoText("https://", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+            trailingIcon = { TextButton(onClick = onPaste) { Text("붙여넣기") } },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(onGo = { onGo() }),
+            shape = RoundedCornerShape(8.dp),
+        )
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onAnalyze, enabled = !analyzing, modifier = Modifier.height(48.dp)) {
+                if (analyzing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("분석")
+            }
+            OutlinedButton(onClick = onGo, enabled = !analyzing, shape = RoundedCornerShape(8.dp)) { Text("이동") }
+        }
+        if (clipboard != null) {
+            Row(
+                Modifier
+                    .padding(top = 12.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(start = 14.dp, top = 8.dp, bottom = 8.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("방금 복사한 링크", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    MonoText(clipboardHost(clipboard), color = MaterialTheme.colorScheme.onSurface)
+                }
+                Button(onClick = onOpenClip, shape = RoundedCornerShape(8.dp), modifier = Modifier.height(40.dp)) { Text("열기") }
+                TextButton(onClick = onDismissClip) { Text("닫기") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowserChrome(
+    address: String,
+    tabCount: Int,
+    menu: Boolean,
+    desktop: Boolean,
+    onClose: () -> Unit,
+    onTabs: () -> Unit,
+    onMenu: () -> Unit,
+    onDismissMenu: () -> Unit,
+    onBookmark: () -> Unit,
+    onShowBookmarks: () -> Unit,
+    onShowHistory: () -> Unit,
+    onDesktop: (Boolean) -> Unit,
+    onException: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = onClose, modifier = Modifier.height(48.dp)) { Text("닫기") }
+        Row(
+            Modifier
+                .weight(1f)
+                .height(40.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MonoText(clipboardHost(address), color = MaterialTheme.colorScheme.onSurface)
+        }
+        TextButton(onClick = onTabs, modifier = Modifier.height(48.dp)) {
+            MonoText(tabCount.toString(), style = monoStyle(12, 16, androidx.compose.ui.text.font.FontWeight.SemiBold), color = MaterialTheme.colorScheme.onSurface)
+        }
+        Box {
+            TextButton(onClick = onMenu, modifier = Modifier.height(48.dp)) { Text("메뉴") }
+            BrowserMenu(menu, desktop, onDismissMenu, onBookmark, onShowBookmarks, onShowHistory, onDesktop, onException)
+        }
+    }
+}
+
+@Composable
+private fun DetectDock(count: Int, videos: Int, photos: Int, onOpen: () -> Unit, modifier: Modifier = Modifier) {
+    val detail = if (photos > 0) "영상 ${videos}개 · 사진 ${photos}장" else "영상 ${videos}개"
+    Row(
+        modifier
+            .fillMaxWidth()
+            .height(64.dp)
+            .shadow(12.dp, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.inverseSurface)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            Modifier
+                .size(48.dp)
+                .border(1.dp, MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.25f), RoundedCornerShape(8.dp)),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            RollingCount(count, monoStyle(22, 28, androidx.compose.ui.text.font.FontWeight.SemiBold), MaterialTheme.colorScheme.inverseOnSurface)
+        }
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(detail, color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.titleMedium)
+            Text("재생하면 더 찾아요", color = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.75f), style = MaterialTheme.typography.bodySmall)
+        }
+        Button(onClick = onOpen, modifier = Modifier.height(48.dp), shape = RoundedCornerShape(8.dp)) { Text("받기") }
     }
 }
 

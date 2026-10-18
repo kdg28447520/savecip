@@ -113,7 +113,7 @@ object DetectedSheet {
     fun photoCta(count: Int): String = "사진 ${count}장 받기"
 
     fun shortLabel(count: Int, open: Boolean): String {
-        return if (open) "10초 미만 영상 ${count}개 · 접기" else "10초 미만 영상 ${count}개 숨김 · 보기"
+        return if (open) "10초 미만 ${count}개 · 접기" else "10초 미만 ${count}개를 접어 뒀어요 · 펼치기"
     }
 
     fun visibleCopy(card: VideoCard): String {

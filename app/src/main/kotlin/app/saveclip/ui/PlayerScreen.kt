@@ -48,6 +48,9 @@ import androidx.media3.common.Tracks
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import app.saveclip.LocalContainer
+import app.saveclip.ui.theme.PlayerPaper
+import app.saveclip.ui.theme.PlayerTheme
+import app.saveclip.ui.theme.monoStyle
 import app.saveclip.core.player.GestureZone
 import app.saveclip.core.player.OrientationMode
 import app.saveclip.core.player.PlayerGestures
@@ -128,7 +131,8 @@ fun PlayerScreen(uri: String, onBack: () -> Unit) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    PlayerTheme {
+    Box(Modifier.fillMaxSize().background(PlayerPaper)) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -265,10 +269,10 @@ fun PlayerScreen(uri: String, onBack: () -> Unit) {
                 TextButton(onClick = {
                     if (player.isPlaying) player.pause() else player.play()
                 }) { Text(if (player.isPlaying) "일시정지" else "재생", color = Color.White) }
-                Text(
+                MonoText(
                     "${formatClock(position)} / ${formatClock(duration)}",
                     color = Color.White,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = monoStyle(12, 16),
                 )
             }
             if (duration > 0L) {
@@ -279,6 +283,7 @@ fun PlayerScreen(uri: String, onBack: () -> Unit) {
                 )
             }
         }
+    }
     }
 }
 

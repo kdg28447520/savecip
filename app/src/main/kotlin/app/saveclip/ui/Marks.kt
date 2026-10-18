@@ -63,6 +63,21 @@ fun MarkFilm(color: Color, modifier: Modifier = Modifier) {
 }
 
 @Composable
+fun MarkAlert(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(22.dp)) {
+        drawCircle(color, style = Stroke(width = 2.dp.toPx()))
+        drawLine(
+            color,
+            Offset(size.width * 0.5f, size.height * 0.28f),
+            Offset(size.width * 0.5f, size.height * 0.58f),
+            2.dp.toPx(),
+            StrokeCap.Round,
+        )
+        drawCircle(color, radius = 1.6.dp.toPx(), center = Offset(size.width * 0.5f, size.height * 0.74f))
+    }
+}
+
+@Composable
 fun MarkLock(color: Color, modifier: Modifier = Modifier) {
     Canvas(modifier.size(22.dp)) {
         drawRoundRect(

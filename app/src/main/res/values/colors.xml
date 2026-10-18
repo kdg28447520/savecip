@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="persimmon">#C2410C</color>
-    <color name="paper">#FAF8F6</color>
-    <color name="ink">#1C1915</color>
-    <color name="paper_dark">#141210</color>
+    <color name="paper">#F5F1EA</color>
+    <color name="ink">#1A1A18</color>
+    <color name="paper_dark">#121211</color>
 </resources>

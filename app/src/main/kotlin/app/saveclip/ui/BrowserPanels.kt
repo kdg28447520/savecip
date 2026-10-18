@@ -1,6 +1,6 @@
 package app.saveclip.ui
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -23,6 +24,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -40,6 +42,8 @@ import app.saveclip.browser.BrowserTab
 import app.saveclip.core.hint.FirstRunHint
 import app.saveclip.data.AppSettings
 import app.saveclip.data.ShortcutEntity
+import app.saveclip.storage.LibraryItem
+import app.saveclip.ui.theme.monoStyle
 
 @Composable
 fun TabStrip(
@@ -88,7 +92,14 @@ fun BrowserMenu(
 }
 
 @Composable
-fun HomeGrid(onOpen: (String) -> Unit, onAdd: (String, String) -> Unit, onRemove: (String) -> Unit) {
+fun HomeGrid(
+    onOpen: (String) -> Unit,
+    onAdd: (String, String) -> Unit,
+    onRemove: (String) -> Unit,
+    onBookmarks: () -> Unit = {},
+    onOpenDownloads: () -> Unit = {},
+    onPlay: (String) -> Unit = {},
+) {
     val container = LocalContainer.current
     val shortcuts by container.browser.shortcuts().collectAsState(initial = emptyList())
     var adding by remember { mutableStateOf(false) }
@@ -98,46 +109,48 @@ fun HomeGrid(onOpen: (String) -> Unit, onAdd: (String, String) -> Unit, onRemove
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .verticalScroll(rememberScrollState()),
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("바로가기", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            if (shortcuts.isNotEmpty()) {
-                TextButton(onClick = { editing = !editing }) { Text(if (editing) "완료" else "편집") }
-            }
-        }
-        Text(
-            "기본 바로가기는 비어 있어요. 추가해도 유튜브 주소는 저장되지 않아요.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        IndexHeader(
+            number = "01",
+            title = "바로가기",
+            action = if (shortcuts.isNotEmpty()) if (editing) "완료" else "편집" else null,
+            onAction = if (shortcuts.isNotEmpty()) ({ editing = !editing }) else null,
         )
-        val cells: List<ShortcutEntity?> = shortcuts + null
-        cells.chunked(4).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { shortcut ->
-                    if (shortcut == null) {
-                        LetterTile("추가", "+", Modifier.weight(1f)) { adding = true }
-                    } else {
-                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                            LetterTile(
-                                shortcut.label,
-                                shortcut.label.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
-                                Modifier.fillMaxWidth(),
-                            ) { onOpen(shortcut.url) }
-                            if (editing) {
-                                TextButton(onClick = { onRemove(shortcut.id) }, modifier = Modifier.heightIn(min = 48.dp)) {
-                                    Text("삭제")
+        val cells = shortcuts.map { it to it.label.firstOrNull()?.uppercaseChar()?.toString().orEmpty().ifBlank { "?" } }
+        val tail = listOf<Pair<ShortcutEntity?, String>>(null to "북마크", null to "추가")
+        (cells.map { it.first to it.second } + tail).chunked(4).forEach { row ->
+            Row(Modifier.fillMaxWidth().height(76.dp)) {
+                row.forEach { (shortcut, letter) ->
+                    val label = shortcut?.label ?: letter
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxSize()
+                            .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                            .clickable {
+                                when {
+                                    shortcut != null -> onOpen(shortcut.url)
+                                    letter == "북마크" -> onBookmarks()
+                                    else -> adding = true
                                 }
-                            }
+                            },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        if (shortcut != null) {
+                            MonoText(letter, style = monoStyle(20, 24), color = MaterialTheme.colorScheme.onSurface)
+                        }
+                        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (editing && shortcut != null) {
+                            TextButton(onClick = { onRemove(shortcut.id) }) { Text("삭제") }
                         }
                     }
                 }
-                repeat(4 - row.size) {
-                    Box(Modifier.weight(1f))
-                }
+                repeat(4 - row.size) { Box(Modifier.weight(1f)) }
             }
         }
+        RecentDownloads(onOpenDownloads, onPlay)
     }
     if (adding) {
         AlertDialog(
@@ -163,26 +176,26 @@ fun HomeGrid(onOpen: (String) -> Unit, onAdd: (String, String) -> Unit, onRemove
 }
 
 @Composable
-private fun LetterTile(label: String, letter: String, modifier: Modifier, onClick: () -> Unit) {
-    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            Modifier
-                .size(56.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable(onClick = onClick),
-            contentAlignment = Alignment.Center,
+private fun RecentDownloads(onOpenDownloads: () -> Unit, onPlay: (String) -> Unit) {
+    val container = LocalContainer.current
+    var items by remember { mutableStateOf<List<LibraryItem>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        items = runCatching { container.library.list(includePrivate = false).take(3) }.getOrDefault(emptyList())
+    }
+    if (items.isEmpty()) return
+    IndexHeader("02", "최근 받은 영상", "전체 보기", onOpenDownloads)
+    items.forEach { item ->
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable { onPlay(item.uri.toString()) },
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(letter, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
+                Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                if (item.sizeBytes > 0) MonoText(formatBytes(item.sizeBytes))
+            }
+            TextButton(onClick = { onPlay(item.uri.toString()) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("재생") }
         }
-        Text(
-            label,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(top = 4.dp),
-            style = MaterialTheme.typography.bodySmall,
-        )
+        Hairline()
     }
 }
 

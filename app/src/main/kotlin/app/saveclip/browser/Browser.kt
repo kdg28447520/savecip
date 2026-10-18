@@ -381,6 +381,19 @@ class BrowserViewModel(
         webView?.goBack()
     }
 
+    fun goForward() {
+        webView?.goForward()
+    }
+
+    fun reload() {
+        webView?.reload()
+    }
+
+    fun showHome() {
+        webView?.stopLoading()
+        hasPageFlow.value = false
+    }
+
     fun onPageStarted(url: String) {
         if (!url.startsWith("http")) return
         protectedPage.set(false)

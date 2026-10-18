@@ -66,7 +66,7 @@ class DetectedSheetTest {
         assertEquals("cdn.example 사진 1", built.photos.single().title)
         assertFalse(built.photos.single().title.contains("webp"))
         assertEquals("사진 1장 받기", DetectedSheet.photoCta(1))
-        assertEquals("10초 미만 영상 1개 숨김 · 보기", DetectedSheet.shortLabel(1, open = false))
+        assertEquals("10초 미만 1개를 접어 뒀어요 · 펼치기", DetectedSheet.shortLabel(1, open = false))
         assertEquals(built.videos.single().id, built.selectedId)
     }
 

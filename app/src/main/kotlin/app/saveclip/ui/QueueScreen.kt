@@ -13,13 +13,13 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -32,6 +32,7 @@ import app.saveclip.LocalContainer
 import app.saveclip.data.DownloadEntity
 import app.saveclip.data.DownloadStatuses
 import app.saveclip.download.DownloadRepository
+import app.saveclip.ui.theme.monoStyle
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -60,9 +61,10 @@ fun DownloadsScreen(
     Column(Modifier.fillMaxSize()) {
         Text(
             "다운로드",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            style = MaterialTheme.typography.displaySmall,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
+        SummaryStrip(running = tasks.count { it.status == DownloadStatuses.RUNNING || it.status == DownloadStatuses.QUEUED || it.status == DownloadStatuses.PAUSED })
         if (tasks.isNotEmpty()) {
             QueueGroups(
                 tasks = tasks,
@@ -74,6 +76,7 @@ fun DownloadsScreen(
                 modifier = Modifier.heightIn(max = 360.dp),
             )
         }
+        IndexHeader("03", "완료")
         Box(Modifier.weight(1f)) {
             LibraryScreen(
                 onPlay = onPlay,
@@ -106,27 +109,45 @@ private fun QueueGroups(
     ) {
         if (running.isNotEmpty()) {
             item(key = "running-head") {
-                SectionHead("받는 중 · ${running.size}") {
-                    TextButton(onClick = { onPauseAll(running.map { it.id }) }) { Text("모두 일시정지") }
-                }
+                IndexHeader("01", "받는 중", "모두 일시정지") { onPauseAll(running.map { it.id }) }
             }
             items(running, key = { it.id }) { task ->
                 QueueCard(task, { onPause(task.id) }, { onResume(task.id) }, { onCancel(task.id) }, onOpenPage)
             }
         }
         if (waiting.isNotEmpty()) {
-            item(key = "waiting-head") { SectionHead("대기 · ${waiting.size}") }
+            item(key = "waiting-head") { IndexHeader("01", "대기") }
             items(waiting, key = { it.id }) { task ->
                 QueueCard(task, { onPause(task.id) }, { onResume(task.id) }, { onCancel(task.id) }, onOpenPage)
             }
         }
         if (failed.isNotEmpty()) {
-            item(key = "failed-head") { SectionHead("실패 · ${failed.size}") }
+            item(key = "failed-head") { IndexHeader("02", "실패") }
             items(failed, key = { it.id }) { task ->
                 QueueCard(task, { onPause(task.id) }, { onResume(task.id) }, { onCancel(task.id) }, onOpenPage)
             }
         }
     }
+}
+
+@Composable
+private fun SummaryStrip(running: Int) {
+    val freeGb = remember {
+        val stat = android.os.StatFs(android.os.Environment.getDataDirectory().path)
+        stat.availableBytes / (1024.0 * 1024.0 * 1024.0)
+    }
+    InkRule()
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Column(Modifier.weight(1f)) {
+            MonoText(running.toString(), style = monoStyle(22, 28), color = MaterialTheme.colorScheme.onSurface)
+            Text("받는 중", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Column(Modifier.weight(1.3f)) {
+            MonoText(String.format(java.util.Locale.US, "%.1f GB", freeGb), style = monoStyle(22, 28), color = MaterialTheme.colorScheme.onSurface)
+            Text("남은 공간", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+    Hairline()
 }
 
 @Composable
@@ -145,8 +166,9 @@ private fun QueueCard(
     onCancel: () -> Unit,
     onOpenPage: (String) -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
+    Column(Modifier.fillMaxWidth()) {
+        SelectionRule(selected = false) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text(task.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(
                 "${statusLabel(task.status)} · ${task.qualityLabel}",
@@ -180,11 +202,7 @@ private fun QueueCard(
                 }
             }
             if (task.status == DownloadStatuses.FAILED) {
-                Text(
-                    failureCopy(task.errorMessage),
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
+                FailureLine(failureCopy(task.errorMessage), Modifier.padding(top = 8.dp))
                 val done = progressDetail(task)
                 if (done.isNotBlank()) {
                     Text(done, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
@@ -209,6 +227,7 @@ private fun QueueCard(
                 }
                 TextButton(onClick = onCancel) { Text("취소") }
             }
+        }
         }
     }
 }
