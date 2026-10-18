@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">세이브클립</string>
+    <string name="channel_name">다운로드</string>
+    <string name="channel_desc">받는 중인 영상을 표시합니다</string>
+    <string name="notif_preparing">준비 중</string>
+    <string name="notif_running">받는 중</string>
+    <string name="notif_pause">일시정지</string>
+    <string name="notif_done">저장했습니다</string>
+    <string name="notif_failed">받지 못했습니다</string>
+</resources>
