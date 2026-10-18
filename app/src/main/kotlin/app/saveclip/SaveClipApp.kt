@@ -6,6 +6,8 @@ import androidx.work.Configuration
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
+import app.saveclip.core.extract.defaultPageMediaExtractor
+import app.saveclip.crash.CrashStore
 import app.saveclip.data.AppDatabase
 import app.saveclip.data.SettingsStore
 import app.saveclip.download.DownloadRepository
@@ -30,6 +32,7 @@ class AppContainer(val app: Application) {
     val database = AppDatabase.create(app)
     val settings = SettingsStore(app)
     val messages = UserMessageBus()
+    val extractor = defaultPageMediaExtractor()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val repository = DownloadRepository(app, database.downloadDao(), settings, messages)
     val library = LibraryRepository(app, database.downloadDao())
@@ -41,6 +44,7 @@ class SaveClipApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        CrashStore.install(this)
         container = AppContainer(this)
         instance = this
     }

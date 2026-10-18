@@ -76,6 +76,7 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
     val choices by model.choices.collectAsState()
     val selected by model.selected.collectAsState()
     val loadingChoice by model.loadingChoice.collectAsState()
+    val analyzing by model.analyzing.collectAsState()
     var sheet by remember { mutableStateOf(false) }
     var pending by remember { mutableStateOf<DetectedMedia?>(null) }
     val context = LocalContext.current
@@ -134,20 +135,36 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = address,
-                        onValueChange = model::onAddressChange,
+                OutlinedTextField(
+                    value = address,
+                    onValueChange = model::onAddressChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("페이지 주소") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { model.submit(address) }),
+                    shape = RoundedCornerShape(16.dp),
+                )
+                Row(
+                    Modifier.padding(top = 8.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = { model.analyzeInput(address) },
+                        enabled = !analyzing,
                         modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        placeholder = { Text("페이지 주소") },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                        keyboardActions = KeyboardActions(onGo = { model.submit(address) }),
                         shape = RoundedCornerShape(16.dp),
-                    )
+                    ) {
+                        if (analyzing) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("분석")
+                        }
+                    }
                     Button(
                         onClick = { model.submit(address) },
-                        modifier = Modifier.padding(start = 8.dp),
+                        enabled = !analyzing,
+                        modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(16.dp),
                     ) { Text("이동") }
                 }
@@ -245,7 +262,7 @@ private fun EmptyBrowser() {
         Text("영상 페이지 주소를 붙여 넣으세요", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(10.dp))
         Text(
-            "재생이 시작되면 mp4, webm, HLS, DASH 주소를 찾아 둡니다. 유튜브는 열 수 없고, 보호된 영상은 받을 수 없어요.",
+            "분석은 주소에서 영상을 찾고, 이동은 페이지를 엽니다. 유튜브는 열 수 없고, 보호된 영상은 받을 수 없어요.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -273,7 +290,7 @@ private fun DetectedRow(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
             Text(
-                fileLabel(item.url),
+                item.label ?: fileLabel(item.url),
                 modifier = Modifier.padding(start = 8.dp).weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

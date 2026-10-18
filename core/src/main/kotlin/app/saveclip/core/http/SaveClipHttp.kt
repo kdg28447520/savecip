@@ -22,6 +22,12 @@ import kotlin.coroutines.coroutineContext
 
 class HttpStatusException(val code: Int, val url: String) : IOException("HTTP $code")
 
+data class TextPeek(
+    val finalUrl: String,
+    val contentType: String,
+    val text: String,
+)
+
 class SaveClipHttp(base: OkHttpClient = OkHttpClient()) {
     private val client: OkHttpClient = base.newBuilder()
         .followRedirects(false)
@@ -30,6 +36,37 @@ class SaveClipHttp(base: OkHttpClient = OkHttpClient()) {
         .readTimeout(90, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    suspend fun finalUrl(url: String, headers: Map<String, String> = emptyMap()): String = withContext(Dispatchers.IO) {
+        execute(url, headers, null).use { response ->
+            response.request.url.toString()
+        }
+    }
+
+    suspend fun peekText(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        maxChars: Int = 512_000,
+    ): TextPeek = withContext(Dispatchers.IO) {
+        execute(url, headers, null).use { response ->
+            if (!response.isSuccessful) throw HttpStatusException(response.code, url)
+            val type = response.header("Content-Type").orEmpty()
+            val resolved = response.request.url.toString()
+            if (!isTextual(type)) return@withContext TextPeek(resolved, type, "")
+            val body = response.body ?: return@withContext TextPeek(resolved, type, "")
+            val text = body.charStream().use { reader ->
+                val out = StringBuilder()
+                val buffer = CharArray(8192)
+                while (out.length < maxChars) {
+                    val count = reader.read(buffer, 0, minOf(buffer.size, maxChars - out.length))
+                    if (count < 0) break
+                    out.append(buffer, 0, count)
+                }
+                out.toString()
+            }
+            TextPeek(resolved, type, text)
+        }
+    }
 
     suspend fun getText(url: String, headers: Map<String, String> = emptyMap()): String = withContext(Dispatchers.IO) {
         execute(url, headers, null).use { response ->
@@ -181,4 +218,14 @@ class SaveClipHttp(base: OkHttpClient = OkHttpClient()) {
     }
 
     private fun isRedirect(code: Int): Boolean = code == 301 || code == 302 || code == 303 || code == 307 || code == 308
+
+    private fun isTextual(contentType: String): Boolean {
+        if (contentType.isBlank()) return true
+        val type = contentType.lowercase()
+        return type.contains("json") ||
+            type.contains("text") ||
+            type.contains("xml") ||
+            type.contains("html") ||
+            type.contains("javascript")
+    }
 }

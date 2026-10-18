@@ -19,6 +19,9 @@ import app.saveclip.core.BrowserProfile
 import app.saveclip.core.UserMessages
 import app.saveclip.core.detect.MediaClassifier
 import app.saveclip.core.detect.MediaKind
+import app.saveclip.core.extract.ExtractResult
+import app.saveclip.core.extract.MediaRequestGate
+import app.saveclip.core.extract.RequestDecision
 import app.saveclip.core.net.UrlResolver
 import app.saveclip.core.policy.ExecutableBlockedException
 import app.saveclip.core.policy.ProtectedMediaException
@@ -27,6 +30,8 @@ import app.saveclip.core.policy.YouTubeBlocklist
 import app.saveclip.core.quality.PlaylistInspector
 import app.saveclip.core.quality.QualityChoice
 import app.saveclip.download.NewDownload
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -34,6 +39,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 data class DetectedMedia(
     val url: String,
@@ -41,6 +47,7 @@ data class DetectedMedia(
     val kind: MediaKind,
     val pageUrl: String,
     val pageTitle: String,
+    val label: String? = null,
 )
 
 object SnifferScript {
@@ -113,6 +120,8 @@ class BrowserViewModel(
     private val main = Handler(Looper.getMainLooper())
     private val protectedPage = AtomicBoolean(false)
     private val youtubeNotified = AtomicBoolean(false)
+    private val pageSnapshot = AtomicReference("")
+    private var analyzeJob: Job? = null
 
     private val itemsFlow = MutableStateFlow<List<DetectedMedia>>(emptyList())
     val items = itemsFlow.asStateFlow()
@@ -134,6 +143,8 @@ class BrowserViewModel(
     val selected = selectedFlow.asStateFlow()
     private val loadingChoiceFlow = MutableStateFlow<String?>(null)
     val loadingChoice = loadingChoiceFlow.asStateFlow()
+    private val analyzingFlow = MutableStateFlow(false)
+    val analyzing = analyzingFlow.asStateFlow()
 
     var webView: WebView? = null
         private set
@@ -167,7 +178,13 @@ class BrowserViewModel(
         created.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 progressFlow.value = newProgress
-                if (newProgress > 60) view?.evaluateJavascript(SnifferScript.SOURCE, null)
+                if (newProgress > 60) {
+                    try {
+                        view?.evaluateJavascript(SnifferScript.SOURCE, null)
+                    } catch (_: Throwable) {
+                        // Ignore script injection failures.
+                    }
+                }
             }
 
             override fun onReceivedTitle(view: WebView?, title: String?) {
@@ -182,10 +199,12 @@ class BrowserViewModel(
         return created
     }
 
+    fun pageSnapshot(): String = pageSnapshot.get()
+
     fun submit(raw: String) {
         val url = UrlResolver.normalizeUserInput(raw)
         if (url == null) {
-            container.messages.post("http 또는 https 주소만 열 수 있어요")
+            container.messages.post(UserMessages.BAD_URL)
             return
         }
         if (YouTubeBlocklist.isBlocked(url)) {
@@ -196,7 +215,42 @@ class BrowserViewModel(
         addressFlow.value = url
         hasPageFlow.value = true
         blockedFlow.value = false
-        obtainWebView().loadUrl(url)
+        pageSnapshot.set(url)
+        try {
+            obtainWebView().loadUrl(url)
+        } catch (_: Throwable) {
+            container.messages.post(UserMessages.PAGE_FAILED)
+        }
+        analyzeInput(url)
+    }
+
+    fun analyzeInput(raw: String) {
+        val normalized = UrlResolver.normalizeUserInput(raw)
+        if (normalized != null) addressFlow.value = normalized
+        analyzeJob?.cancel()
+        analyzeJob = viewModelScope.launch {
+            analyzingFlow.value = true
+            try {
+                when (val result = container.extractor.extract(raw)) {
+                    is ExtractResult.Media -> {
+                        result.items.forEach { item ->
+                            onMedia(item.url, item.mime, item.pageUrl, item.title, item.label)
+                        }
+                        container.messages.post(UserMessages.FOUND)
+                    }
+                    is ExtractResult.Rejected -> {
+                        if (result.message == UserMessages.YOUTUBE) blockedFlow.value = true
+                        container.messages.post(result.message)
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                container.messages.post(UserMessages.ANALYZE_FAILED)
+            } finally {
+                analyzingFlow.value = false
+            }
+        }
     }
 
     fun goBack() {
@@ -212,11 +266,16 @@ class BrowserViewModel(
         choicesFlow.value = emptyMap()
         selectedFlow.value = emptyMap()
         addressFlow.value = url
+        pageSnapshot.set(url)
         syncBack()
     }
 
     fun onPageFinished() {
-        webView?.evaluateJavascript(SnifferScript.SOURCE, null)
+        try {
+            webView?.evaluateJavascript(SnifferScript.SOURCE, null)
+        } catch (_: Throwable) {
+            // The page can be gone before the script runs.
+        }
         syncBack()
     }
 
@@ -238,21 +297,34 @@ class BrowserViewModel(
         }
     }
 
-    fun onMedia(url: String, mime: String?, pageUrl: String, pageTitle: String) {
-        if (protectedPage.get()) return
-        if (YouTubeBlocklist.isBlocked(url) || YouTubeBlocklist.isBlocked(pageUrl)) {
-            onYouTube(false)
-            return
-        }
-        if (!url.startsWith("http://") && !url.startsWith("https://")) return
-        val kind = MediaClassifier.classify(url, mime) ?: return
-        if (app.saveclip.core.policy.ExecutableGuard.isBlockedUrl(url)) return
-        val title = pageTitle.ifBlank { titleFlow.value }
-        main.post {
-            itemsFlow.update { current ->
-                if (current.any { it.url == url }) current
-                else (current + DetectedMedia(url, mime.orEmpty(), kind, pageUrl, title)).takeLast(40)
+    fun onMedia(url: String, mime: String?, pageUrl: String, pageTitle: String, label: String? = null) {
+        try {
+            if (protectedPage.get()) return
+            if (YouTubeBlocklist.isBlocked(url) || YouTubeBlocklist.isBlocked(pageUrl)) {
+                onYouTube(false)
+                return
             }
+            if (!url.startsWith("http://") && !url.startsWith("https://")) return
+            val kind = MediaClassifier.classify(url, mime) ?: return
+            if (app.saveclip.core.policy.ExecutableGuard.isBlockedUrl(url)) return
+            val title = pageTitle.ifBlank { titleFlow.value }
+            val media = DetectedMedia(url, mime.orEmpty(), kind, pageUrl, title, label)
+            main.post {
+                itemsFlow.update { current ->
+                    val index = current.indexOfFirst { it.url == url }
+                    if (index >= 0) {
+                        if (current[index].label == null && media.label != null) {
+                            current.toMutableList().also { it[index] = media }
+                        } else {
+                            current
+                        }
+                    } else {
+                        (current + media).takeLast(40)
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+            // One bad address must not close the app.
         }
     }
 
@@ -274,6 +346,8 @@ class BrowserViewModel(
                         if (current.containsKey(item.url)) current else current + (item.url to list.first().id)
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (_: ProtectedMediaException) {
                 container.messages.post(UserMessages.PROTECTED)
             } catch (_: YouTubeBlockedException) {
@@ -298,32 +372,48 @@ class BrowserViewModel(
             return
         }
         viewModelScope.launch {
-            val choice = choicesFlow.value[item.url]?.firstOrNull { it.id == selectedFlow.value[item.url] }
-            container.repository.enqueue(
-                NewDownload(
-                    mediaUrl = item.url,
-                    pageUrl = item.pageUrl,
-                    title = titleFlow.value.ifBlank { item.pageTitle }.ifBlank { "영상" },
-                    kind = item.kind,
-                    qualityLabel = choice?.label ?: kindLabel(item.kind),
-                    variantUrl = if (item.kind == MediaKind.HLS) choice?.id else null,
-                    videoRepresentationId = if (item.kind == MediaKind.DASH) choice?.id else null,
-                    audioRepresentationId = null,
-                    headers = headerMap(item.pageUrl, item.url),
-                ),
-            )
+            try {
+                val choice = choicesFlow.value[item.url]?.firstOrNull { it.id == selectedFlow.value[item.url] }
+                container.repository.enqueue(
+                    NewDownload(
+                        mediaUrl = item.url,
+                        pageUrl = item.pageUrl,
+                        title = titleFlow.value.ifBlank { item.pageTitle }.ifBlank { "영상" },
+                        kind = item.kind,
+                        qualityLabel = choice?.label ?: item.label ?: kindLabel(item.kind),
+                        variantUrl = if (item.kind == MediaKind.HLS) choice?.id else null,
+                        videoRepresentationId = if (item.kind == MediaKind.DASH) choice?.id else null,
+                        audioRepresentationId = null,
+                        headers = headerMap(item.pageUrl, item.url),
+                    ),
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: YouTubeBlockedException) {
+                container.messages.post(UserMessages.YOUTUBE)
+            } catch (_: ProtectedMediaException) {
+                container.messages.post(UserMessages.PROTECTED)
+            } catch (_: ExecutableBlockedException) {
+                container.messages.post(UserMessages.EXECUTABLE)
+            } catch (_: Throwable) {
+                container.messages.post(UserMessages.ENQUEUE_FAILED)
+            }
         }
     }
 
     private fun onBridgeReport(json: String) {
-        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return
-        val page = obj.optString("page")
-        val title = obj.optString("title")
-        if (title.isNotBlank()) main.post { titleFlow.value = title }
-        val items = obj.optJSONArray("items") ?: return
-        for (index in 0 until items.length()) {
-            val item = items.optJSONObject(index) ?: continue
-            onMedia(item.optString("url"), item.optString("mime"), page, title)
+        try {
+            val obj = runCatching { JSONObject(json) }.getOrNull() ?: return
+            val page = obj.optString("page")
+            val title = obj.optString("title")
+            if (title.isNotBlank()) main.post { titleFlow.value = title }
+            val items = obj.optJSONArray("items") ?: return
+            for (index in 0 until items.length()) {
+                val item = items.optJSONObject(index) ?: continue
+                onMedia(item.optString("url"), item.optString("mime"), page, title)
+            }
+        } catch (_: Throwable) {
+            // Bridge payloads are untrusted page data.
         }
     }
 
@@ -367,26 +457,37 @@ private class SaveClipWebViewClient(
     private val model: BrowserViewModel,
 ) : WebViewClient() {
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-        val url = request.url.toString()
-        if (YouTubeBlocklist.isBlocked(url)) {
-            model.onYouTube(request.isForMainFrame)
-            return true
+        return try {
+            val url = request.url?.toString().orEmpty()
+            val scheme = request.url?.scheme?.lowercase().orEmpty()
+            if (scheme != "http" && scheme != "https") return true
+            if (YouTubeBlocklist.isBlocked(url)) {
+                model.onYouTube(request.isForMainFrame)
+                return true
+            }
+            false
+        } catch (_: Throwable) {
+            true
         }
-        return false
     }
 
     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-        val url = request.url.toString()
-        if (YouTubeBlocklist.isBlocked(url)) {
-            model.onYouTube(request.isForMainFrame)
-            return blocked()
+        return try {
+            val url = request.url?.toString().orEmpty()
+            when (val decision = MediaRequestGate.inspect(url, model.pageSnapshot(), request.isForMainFrame)) {
+                is RequestDecision.Block -> {
+                    if (decision.youtube) model.onYouTube(request.isForMainFrame)
+                    blocked()
+                }
+                is RequestDecision.Observe -> {
+                    model.onMedia(decision.url, null, decision.pageUrl, model.title.value)
+                    null
+                }
+                RequestDecision.Allow -> null
+            }
+        } catch (_: Throwable) {
+            null
         }
-        if (app.saveclip.core.policy.ExecutableGuard.isBlockedUrl(url)) return blocked()
-        if (!request.isForMainFrame) {
-            val page = view.url ?: ""
-            model.onMedia(url, null, page, model.title.value)
-        }
-        return null
     }
 
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {

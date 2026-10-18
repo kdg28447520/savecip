@@ -7,15 +7,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import android.content.Intent
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -25,7 +28,10 @@ import app.saveclip.AppContainer
 import app.saveclip.LocalContainer
 import app.saveclip.core.UserMessages
 import app.saveclip.data.AppSettings
+import app.saveclip.crash.CrashStore
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -46,11 +52,22 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
     fun setParallel(value: Int) {
         viewModelScope.launch { container.settings.setParallelism(value) }
     }
+
+    private val crashLogFlow = MutableStateFlow(CrashStore.read(container.app))
+    val crashLog = crashLogFlow.asStateFlow()
+
+    fun clearCrashLog() {
+        CrashStore.clear(container.app)
+        crashLogFlow.value = null
+    }
 }
 
 @Composable
 fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
     val settings by model.settings.collectAsState()
+    val crashLog by model.crashLog.collectAsState()
+    val context = LocalContext.current
+    val container = LocalContainer.current
     Column(
         Modifier
             .fillMaxSize()
@@ -100,6 +117,37 @@ fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
                     "저장 위치는 영화/SaveClip 입니다.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+        if (!crashLog.isNullOrBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Card {
+                Column(Modifier.padding(16.dp)) {
+                    Text("마지막 오류 기록", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "앱이 예기치 않게 닫히면 기록이 남습니다. 공유하면 원인을 함께 볼 수 있어요.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        crashLog.orEmpty().take(800),
+                        modifier = Modifier.padding(top = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(onClick = {
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "세이브클립 오류 기록")
+                            putExtra(Intent.EXTRA_TEXT, crashLog)
+                        }
+                        runCatching {
+                            context.startActivity(Intent.createChooser(send, "오류 기록 보내기"))
+                        }.onFailure {
+                            container.messages.post("오류 기록을 보내지 못했어요")
+                        }
+                    }) { Text("기록 보내기") }
+                    TextButton(onClick = model::clearCrashLog) { Text("기록 지우기") }
+                }
             }
         }
     }
