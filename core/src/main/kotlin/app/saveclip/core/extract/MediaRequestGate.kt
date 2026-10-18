@@ -8,6 +8,7 @@ sealed class RequestDecision {
     data object Allow : RequestDecision()
     data class Block(val youtube: Boolean) : RequestDecision()
     data class Observe(val url: String, val pageUrl: String) : RequestDecision()
+    data class Probe(val url: String, val pageUrl: String) : RequestDecision()
 }
 
 /**
@@ -16,7 +17,7 @@ sealed class RequestDecision {
  * from shouldInterceptRequest runs on a background thread and can kill the process.
  */
 object MediaRequestGate {
-    fun inspect(url: String, pageUrl: String, mainFrame: Boolean): RequestDecision {
+    fun inspect(url: String, pageUrl: String, mainFrame: Boolean, accept: String? = null): RequestDecision {
         val trimmed = url.trim()
         if (trimmed.isEmpty()) return RequestDecision.Allow
         val scheme = schemeOf(trimmed)
@@ -26,8 +27,11 @@ object MediaRequestGate {
         }
         if (ExecutableGuard.isBlockedUrl(trimmed)) return RequestDecision.Block(youtube = false)
         if (mainFrame) return RequestDecision.Allow
-        runCatching { MediaClassifier.classify(trimmed, null) }.getOrNull() ?: return RequestDecision.Allow
-        return RequestDecision.Observe(trimmed, pageUrl)
+        val kind = runCatching { MediaClassifier.classify(trimmed, null) }.getOrNull()
+        if (kind != null) return RequestDecision.Observe(trimmed, pageUrl)
+        val probe = runCatching { MediaClassifier.worthProbing(trimmed, accept) }.getOrDefault(false)
+        if (probe) return RequestDecision.Probe(trimmed, pageUrl)
+        return RequestDecision.Allow
     }
 
     private fun schemeOf(url: String): String {

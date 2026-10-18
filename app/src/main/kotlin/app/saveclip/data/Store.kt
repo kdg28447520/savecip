@@ -77,7 +77,7 @@ interface DownloadDao {
 
     @Query(
         "UPDATE downloads SET status = 'RUNNING', errorMessage = NULL " +
-            "WHERE id = :id AND status IN ('QUEUED','FAILED')",
+            "WHERE id = :id AND status IN ('QUEUED','FAILED','RUNNING')",
     )
     suspend fun markRunning(id: String): Int
 
@@ -116,6 +116,7 @@ abstract class AppDatabase : RoomDatabase() {
 data class AppSettings(
     val wifiOnly: Boolean = false,
     val parallelism: Int = 4,
+    val suggestCopiedLink: Boolean = false,
 )
 
 class SettingsStore(context: Context) {
@@ -127,6 +128,7 @@ class SettingsStore(context: Context) {
         AppSettings(
             wifiOnly = prefs[WIFI] ?: false,
             parallelism = (prefs[PARALLEL] ?: 4).coerceIn(1, 6),
+            suggestCopiedLink = prefs[CLIPBOARD] ?: false,
         )
     }
 
@@ -140,8 +142,13 @@ class SettingsStore(context: Context) {
         store.edit { it[PARALLEL] = value.coerceIn(1, 6) }
     }
 
+    suspend fun setSuggestCopiedLink(value: Boolean) {
+        store.edit { it[CLIPBOARD] = value }
+    }
+
     private companion object {
         val WIFI = booleanPreferencesKey("wifi_only")
         val PARALLEL = intPreferencesKey("parallelism")
+        val CLIPBOARD = booleanPreferencesKey("suggest_copied_link")
     }
 }

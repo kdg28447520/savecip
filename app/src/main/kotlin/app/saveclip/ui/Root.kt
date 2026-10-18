@@ -45,6 +45,16 @@ fun SaveClipRoot() {
     LaunchedEffect(container) {
         container.messages.messages.collect { snackbar.showSnackbar(it) }
     }
+    LaunchedEffect(container) {
+        container.incoming.pending.collect { url ->
+            if (url.isNullOrBlank()) return@collect
+            nav.navigate("browser") {
+                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,

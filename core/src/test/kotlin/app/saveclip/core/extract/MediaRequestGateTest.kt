@@ -33,6 +33,28 @@ class MediaRequestGateTest {
     }
 
     @Test
+    fun extensionlessMediaCandidateIsProbedAndYouTubeStaysBlocked() {
+        val candidate = MediaRequestGate.inspect(
+            "https://cdn.example/video/123?token=abc",
+            page,
+            mainFrame = false,
+        )
+        assertTrue(candidate is RequestDecision.Probe)
+        assertEquals(page, (candidate as RequestDecision.Probe).pageUrl)
+        val byAccept = MediaRequestGate.inspect(
+            "https://cdn.example/opaque/id",
+            page,
+            mainFrame = false,
+            accept = "application/vnd.apple.mpegurl",
+        )
+        assertTrue(byAccept is RequestDecision.Probe)
+        val script = MediaRequestGate.inspect("https://m.naver.com/shorts/assets/main.js", page, false)
+        assertEquals(RequestDecision.Allow, script)
+        val youtube = MediaRequestGate.inspect("https://youtu.be/abc", page, false)
+        assertTrue(youtube is RequestDecision.Block && youtube.youtube)
+    }
+
+    @Test
     fun intentAndYouTubeAndGarbageDoNotThrow() {
         assertTrue(MediaRequestGate.inspect("intent://open#Intent;scheme=naver;end", page, false) is RequestDecision.Block)
         val youtube = MediaRequestGate.inspect("https://www.youtube.com/watch?v=abc", page, true)
