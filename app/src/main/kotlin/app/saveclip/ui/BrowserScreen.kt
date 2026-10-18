@@ -49,6 +49,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
@@ -69,9 +70,11 @@ import app.saveclip.browser.BrowserViewModel
 import app.saveclip.browser.DetectedImage
 import app.saveclip.data.AppSettings
 import app.saveclip.browser.DetectedMedia
-import app.saveclip.browser.fileLabel
-import app.saveclip.browser.kindLabel
+import app.saveclip.core.detect.DetectionList
+import app.saveclip.core.detect.ImageRowInput
+import app.saveclip.core.detect.ListedMedia
 import app.saveclip.core.detect.MediaKind
+import app.saveclip.core.detect.VideoRowInput
 import app.saveclip.ui.theme.Persimmon
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -91,9 +94,12 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
     val tabs by model.tabs.collectAsState()
     val activeTab by model.activeTabId.collectAsState()
     val images by model.images.collectAsState()
+    val facts by model.facts.collectAsState()
+    val pageTitle by model.title.collectAsState()
     val container = LocalContainer.current
     val settings by container.settings.settings.collectAsState(initial = AppSettings())
     var sheet by remember { mutableStateOf(false) }
+    var showTiny by remember { mutableStateOf(false) }
     var pendingDelivery by remember { mutableStateOf(Delivery.VIDEO) }
     var menu by remember { mutableStateOf(false) }
     var bookmarks by remember { mutableStateOf(false) }
@@ -330,7 +336,17 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
         }
     }
 
+    LaunchedEffect(sheet, items, images, selected) {
+        if (sheet) model.refreshSizes()
+    }
     if (sheet) {
+        val arranged = DetectionList.arrange(
+            videos = items.map { VideoRowInput(it.url, it.kind, it.pageTitle.ifBlank { pageTitle }) },
+            images = images.map { ImageRowInput(it.url, it.pageTitle.ifBlank { pageTitle }) },
+            facts = facts,
+        )
+        val videosByUrl = items.associateBy { it.url }
+        val imagesByUrl = images.associateBy { it.url }
         ModalBottomSheet(onDismissRequest = { sheet = false }) {
             Text(
                 "감지된 영상",
@@ -338,25 +354,52 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                 modifier = Modifier.padding(horizontal = 20.dp),
             )
             Text(
-                "페이지를 재생하면 주소가 여기에 쌓입니다. 화질을 고른 뒤 받으세요.",
+                "큰 파일부터 보여 드려요. 1MB보다 작은 파일은 접어 둡니다.",
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
-                items(items, key = { it.url }) { item ->
-                    DetectedRow(
-                        item = item,
-                        choices = choices[item.url].orEmpty(),
-                        selectedId = selected[item.url],
-                        loading = loadingChoice == item.url,
-                        onExpand = { model.ensureChoices(item) },
-                        onSelect = { model.select(item.url, it) },
-                        onDownload = { enqueue(item) },
-                        onAudio = { enqueue(item, Delivery.AUDIO) },
+                items(arranged.main, key = { it.key }) { row ->
+                    PresentedRow(
+                        row = row,
+                        item = videosByUrl[row.url],
+                        choices = choices[row.url].orEmpty(),
+                        selectedId = selected[row.url],
+                        loading = loadingChoice == row.url,
+                        muted = false,
+                        onExpand = { videosByUrl[row.url]?.let(model::ensureChoices) },
+                        onSelect = { model.select(row.url, it) },
+                        onDownload = { videosByUrl[row.url]?.let { enqueue(it) } },
+                        onAudio = { videosByUrl[row.url]?.let { enqueue(it, Delivery.AUDIO) } },
+                        onImage = { imagesByUrl[row.url]?.let { enqueueImage(it) } },
                     )
                 }
-                items(images, key = { "image-" + it.url }) { image ->
-                    ImageRow(image) { enqueueImage(image) }
+                if (arranged.tinyCount > 0) {
+                    item(key = "tiny-files") {
+                        TextButton(
+                            onClick = { showTiny = !showTiny },
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        ) {
+                            Text(if (showTiny) "작은 파일 ${arranged.tinyCount}개 접기" else "작은 파일 ${arranged.tinyCount}개")
+                        }
+                    }
+                    if (showTiny) {
+                        items(arranged.tiny, key = { it.key }) { row ->
+                            PresentedRow(
+                                row = row,
+                                item = videosByUrl[row.url],
+                                choices = choices[row.url].orEmpty(),
+                                selectedId = selected[row.url],
+                                loading = loadingChoice == row.url,
+                                muted = true,
+                                onExpand = { videosByUrl[row.url]?.let(model::ensureChoices) },
+                                onSelect = { model.select(row.url, it) },
+                                onDownload = { videosByUrl[row.url]?.let { enqueue(it) } },
+                                onAudio = { videosByUrl[row.url]?.let { enqueue(it, Delivery.AUDIO) } },
+                                onImage = { imagesByUrl[row.url]?.let { enqueueImage(it) } },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -392,34 +435,64 @@ private fun EmptyBrowser() {
 }
 
 @Composable
-private fun DetectedRow(
-    item: DetectedMedia,
+private fun PresentedRow(
+    row: ListedMedia,
+    item: DetectedMedia?,
     choices: List<app.saveclip.core.quality.QualityChoice>,
     selectedId: String?,
     loading: Boolean,
+    muted: Boolean,
     onExpand: () -> Unit,
     onSelect: (String) -> Unit,
     onDownload: () -> Unit,
     onAudio: () -> Unit,
+    onImage: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    val typeLabel = row.typeLabel.ifBlank { if (row.video) "MP4" else "사진" }
+    val primary = row.primary.ifBlank { if (row.video) "영상" else "사진" }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .alpha(if (muted) 0.55f else 1f)
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             Text(
-                kindLabel(item.kind),
+                typeLabel,
                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.secondaryContainer)
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
-            Text(
-                item.label ?: fileLabel(item.url),
-                modifier = Modifier.padding(start = 8.dp).weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(Modifier.padding(start = 8.dp).weight(1f)) {
+                Text(primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                val secondary = row.secondary
+                if (!secondary.isNullOrBlank()) {
+                    Text(
+                        secondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                val meta = row.meta
+                val detail = when {
+                    !meta.isNullOrBlank() -> meta
+                    row.pending -> "크기 확인 중"
+                    else -> null
+                }
+                if (detail != null) {
+                    Text(
+                        detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
-        if (item.kind == MediaKind.HLS || item.kind == MediaKind.DASH) {
+        if (row.video && item != null && (item.kind == MediaKind.HLS || item.kind == MediaKind.DASH)) {
             if (choices.isEmpty() && !loading) {
                 TextButton(onClick = onExpand) { Text("화질 보기") }
             }
@@ -439,22 +512,19 @@ private fun DetectedRow(
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton(onClick = onDownload, modifier = Modifier.padding(top = 6.dp)) {
-                Text("받기")
-            }
-            FilledTonalButton(onClick = onAudio, modifier = Modifier.padding(top = 6.dp)) {
-                Text("음성만")
+            if (row.video) {
+                FilledTonalButton(onClick = onDownload, modifier = Modifier.padding(top = 6.dp)) {
+                    Text("받기")
+                }
+                FilledTonalButton(onClick = onAudio, modifier = Modifier.padding(top = 6.dp)) {
+                    Text("음성만")
+                }
+            } else {
+                FilledTonalButton(onClick = onImage, modifier = Modifier.padding(top = 6.dp)) {
+                    Text("사진 받기")
+                }
             }
         }
-    }
-}
-
-@Composable
-private fun ImageRow(image: DetectedImage, onDownload: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
-        Text("사진", color = MaterialTheme.colorScheme.primary)
-        Text(fileLabel(image.url), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        FilledTonalButton(onClick = onDownload, modifier = Modifier.padding(top = 6.dp)) { Text("사진 받기") }
     }
 }
 

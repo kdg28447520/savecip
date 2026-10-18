@@ -24,8 +24,11 @@ import app.saveclip.core.UserMessages
 import app.saveclip.core.browser.AdBlockDecision
 import app.saveclip.core.browser.ImageReport
 import app.saveclip.core.browser.TabLimits
+import app.saveclip.core.detect.DetectedNames
 import app.saveclip.core.detect.MediaClassifier
+import app.saveclip.core.detect.MediaFacts
 import app.saveclip.core.detect.MediaKind
+import app.saveclip.core.detect.SizeKind
 import app.saveclip.core.download.Delivery
 import app.saveclip.core.net.SharedLinks
 import app.saveclip.core.policy.ExtraBlocks
@@ -49,6 +52,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -217,6 +221,10 @@ class BrowserViewModel(
     val activeTabId = activeIdFlow.asStateFlow()
     private val imagesFlow = MutableStateFlow<List<DetectedImage>>(emptyList())
     val images = imagesFlow.asStateFlow()
+    private val factsFlow = MutableStateFlow<Map<String, MediaFacts>>(emptyMap())
+    val facts = factsFlow.asStateFlow()
+    private val sizedVariant = ConcurrentHashMap<String, String?>()
+    private val factJobs = ConcurrentHashMap<String, Job>()
     @Volatile private var desktopSite = false
     @Volatile private var blockAds = false
     @Volatile private var exceptions = emptySet<String>()
@@ -368,6 +376,7 @@ class BrowserViewModel(
         imagesFlow.value = emptyList()
         choicesFlow.value = emptyMap()
         selectedFlow.value = emptyMap()
+        clearFacts()
         addressFlow.value = url
         pageSnapshot.set(url)
         touchActive(url = url)
@@ -405,6 +414,7 @@ class BrowserViewModel(
     fun onProtected() {
         if (protectedPage.compareAndSet(false, true)) {
             itemsFlow.value = emptyList()
+            clearFacts()
             container.messages.post(UserMessages.PROTECTED)
         }
     }
@@ -428,6 +438,7 @@ class BrowserViewModel(
             val title = pageTitle.ifBlank { titleFlow.value }
             val media = DetectedMedia(url, mime.orEmpty(), kind, pageUrl, title, label)
             main.post {
+                var added = false
                 itemsFlow.update { current ->
                     val index = current.indexOfFirst { it.url == url }
                     if (index >= 0) {
@@ -437,9 +448,11 @@ class BrowserViewModel(
                             current
                         }
                     } else {
+                        added = true
                         (current + media).takeLast(40)
                     }
                 }
+                if (added) scheduleSize(url, pageUrl, sizeKind(kind), selectedFlow.value[url])
             }
         } catch (_: Throwable) {
             // One bad address must not close the app.
@@ -459,10 +472,9 @@ class BrowserViewModel(
                     else -> emptyList()
                 }
                 choicesFlow.update { it + (item.url to list) }
-                if (list.isNotEmpty()) {
-                    selectedFlow.update { current ->
-                        if (current.containsKey(item.url)) current else current + (item.url to list.first().id)
-                    }
+                if (list.isNotEmpty() && !selectedFlow.value.containsKey(item.url)) {
+                    selectedFlow.update { it + (item.url to list.first().id) }
+                    scheduleSize(item.url, item.pageUrl, sizeKind(item.kind), list.first().id)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -482,6 +494,17 @@ class BrowserViewModel(
 
     fun select(mediaUrl: String, choiceId: String) {
         selectedFlow.update { it + (mediaUrl to choiceId) }
+        val item = itemsFlow.value.firstOrNull { it.url == mediaUrl } ?: return
+        scheduleSize(item.url, item.pageUrl, sizeKind(item.kind), choiceId)
+    }
+
+    fun refreshSizes() {
+        itemsFlow.value.forEach { item ->
+            scheduleSize(item.url, item.pageUrl, sizeKind(item.kind), selectedFlow.value[item.url])
+        }
+        imagesFlow.value.forEach { image ->
+            scheduleSize(image.url, image.pageUrl, SizeKind.IMAGE, null)
+        }
     }
 
     fun enqueue(item: DetectedMedia, delivery: String = Delivery.VIDEO) {
@@ -496,7 +519,7 @@ class BrowserViewModel(
                     NewDownload(
                         mediaUrl = item.url,
                         pageUrl = item.pageUrl,
-                        title = titleFlow.value.ifBlank { item.pageTitle }.ifBlank { "영상" },
+                        title = displayName(item),
                         kind = item.kind,
                         qualityLabel = choice?.label ?: item.label ?: kindLabel(item.kind),
                         variantUrl = if (item.kind == MediaKind.HLS) choice?.id else null,
@@ -651,16 +674,21 @@ class BrowserViewModel(
             val found = ImageReport.urls(json, page.ifBlank { pageSnapshot.get() })
             if (found.isNotEmpty()) {
                 val pageTitle = title.ifBlank { titleFlow.value }
+                val pageUrl = page.ifBlank { pageSnapshot.get() }
                 main.post {
+                    val fresh = mutableListOf<DetectedImage>()
                     imagesFlow.update { current ->
                         val merged = current.toMutableList()
                         found.forEach { url ->
                             if (merged.none { it.url == url }) {
-                                merged += DetectedImage(url, page.ifBlank { pageSnapshot.get() }, pageTitle)
+                                val image = DetectedImage(url, pageUrl, pageTitle)
+                                merged += image
+                                fresh += image
                             }
                         }
                         merged.takeLast(20)
                     }
+                    fresh.forEach { image -> scheduleSize(image.url, image.pageUrl, SizeKind.IMAGE, null) }
                 }
             }
         } catch (_: Throwable) {
@@ -754,7 +782,7 @@ class BrowserViewModel(
                     NewDownload(
                         mediaUrl = image.url,
                         pageUrl = image.pageUrl,
-                        title = image.pageTitle.ifBlank { "사진" },
+                        title = imageName(image),
                         kind = MediaKind.PROGRESSIVE_MP4,
                         qualityLabel = "이미지",
                         variantUrl = null,
@@ -799,6 +827,7 @@ class BrowserViewModel(
         imagesFlow.value = emptyList()
         choicesFlow.value = emptyMap()
         selectedFlow.value = emptyMap()
+        clearFacts()
         blockedFlow.value = false
         protectedPage.set(false)
         val restored = tab.state?.let { runCatching { web.restoreState(it) }.getOrNull() }
@@ -849,8 +878,61 @@ class BrowserViewModel(
 
     override fun onCleared() {
         interceptActive.set(false)
+        clearFacts()
         webView?.destroy()
         webView = null
+    }
+
+    private fun scheduleSize(url: String, pageUrl: String, kind: SizeKind, variantId: String?) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return
+        if (YouTubeBlocklist.isBlocked(url) || YouTubeBlocklist.isBlocked(pageUrl)) return
+        val variantKey = variantId.orEmpty()
+        val sameVariant = sizedVariant[url] == variantKey
+        if (factsFlow.value[url] != null && sameVariant) return
+        if (factJobs[url]?.isActive == true && sameVariant) return
+        if (sizedVariant.containsKey(url) && !sameVariant) factsFlow.update { it - url }
+        sizedVariant[url] = variantKey
+        factJobs[url]?.cancel()
+        factJobs[url] = viewModelScope.launch {
+            val looked = try {
+                container.sizes.lookup(url, kind, headerMap(pageUrl, url), variantId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            if (sizedVariant[url] != variantKey) return@launch
+            factsFlow.update { it + (url to (looked ?: MediaFacts())) }
+        }
+    }
+
+    private fun clearFacts() {
+        factsFlow.value = emptyMap()
+        sizedVariant.clear()
+        factJobs.values.forEach { it.cancel() }
+        factJobs.clear()
+    }
+
+    private fun sizeKind(kind: MediaKind): SizeKind = when (kind) {
+        MediaKind.HLS -> SizeKind.HLS
+        MediaKind.DASH -> SizeKind.DASH
+        MediaKind.WEBM, MediaKind.PROGRESSIVE_MP4 -> SizeKind.PROGRESSIVE
+    }
+
+    private fun displayName(item: DetectedMedia): String {
+        val index = (itemsFlow.value.indexOfFirst { it.url == item.url } + 1).coerceAtLeast(1)
+        return DetectedNames.of(
+            item.pageTitle.ifBlank { titleFlow.value },
+            index,
+            item.url,
+            "영상",
+            DetectedNames.typeOf(item.kind),
+        ).primary
+    }
+
+    private fun imageName(image: DetectedImage): String {
+        val index = (imagesFlow.value.indexOfFirst { it.url == image.url } + 1).coerceAtLeast(1)
+        return DetectedNames.of(image.pageTitle, index, image.url, "사진", DetectedNames.IMAGE).primary
     }
 
     private fun kindLabel(kind: MediaKind): String = when (kind) {

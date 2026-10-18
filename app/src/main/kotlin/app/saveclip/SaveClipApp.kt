@@ -7,6 +7,7 @@ import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import app.saveclip.core.browser.HostBlocklist
+import app.saveclip.core.detect.defaultDetectionSizer
 import app.saveclip.core.detect.defaultExtensionlessProbe
 import app.saveclip.core.extract.defaultPageMediaExtractor
 import app.saveclip.crash.CrashStore
@@ -53,6 +54,7 @@ class AppContainer(val app: Application) {
     val settings = SettingsStore(app)
     val messages = UserMessageBus()
     val probe = defaultExtensionlessProbe()
+    val sizes = defaultDetectionSizer()
     val incoming = IncomingLinks()
     val extractor = defaultPageMediaExtractor()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
