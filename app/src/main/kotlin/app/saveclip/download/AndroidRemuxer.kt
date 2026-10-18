@@ -1,9 +1,11 @@
 package app.saveclip.download
 
+import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.net.Uri
 import app.saveclip.core.UserMessages
 import java.io.File
 import java.nio.ByteBuffer
@@ -75,6 +77,75 @@ object AndroidRemuxer {
             throw IllegalStateException(UserMessages.REMUX_FAILED, error)
         } finally {
             extractors.forEach { runCatching { it.release() } }
+            if (started) runCatching { muxer?.stop() }
+            runCatching { muxer?.release() }
+        }
+    }
+
+    fun extractAudio(input: File, output: File) {
+        val extractor = MediaExtractor()
+        extractor.setDataSource(input.absolutePath)
+        copyAudio(extractor, output)
+    }
+
+    fun extractAudio(context: Context, uri: Uri, output: File) {
+        val extractor = MediaExtractor()
+        extractor.setDataSource(context, uri, null)
+        copyAudio(extractor, output)
+    }
+
+    private fun copyAudio(extractor: MediaExtractor, output: File) {
+        output.parentFile?.mkdirs()
+        if (output.exists()) output.delete()
+        var muxer: MediaMuxer? = null
+        var started = false
+        try {
+            muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val selected = mutableListOf<Pair<Int, Int>>()
+            for (trackIndex in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(trackIndex)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                if (!mime.startsWith("audio/")) continue
+                val destination = muxer.addTrack(format)
+                extractor.selectTrack(trackIndex)
+                selected += trackIndex to destination
+            }
+            if (selected.isEmpty()) error(UserMessages.NO_AUDIO)
+            muxer.start()
+            started = true
+            var buffer = ByteBuffer.allocate(1024 * 1024)
+            val info = MediaCodec.BufferInfo()
+            val destinations = selected.toMap()
+            while (true) {
+                val sourceIndex = extractor.sampleTrackIndex
+                if (sourceIndex < 0) break
+                val destination = destinations[sourceIndex]
+                if (destination == null) {
+                    extractor.advance()
+                    continue
+                }
+                val size = try {
+                    extractor.readSampleData(buffer, 0)
+                } catch (_: IllegalArgumentException) {
+                    buffer = ByteBuffer.allocate(buffer.capacity() * 2)
+                    extractor.readSampleData(buffer, 0)
+                }
+                if (size < 0) break
+                info.offset = 0
+                info.size = size
+                info.presentationTimeUs = extractor.sampleTime.coerceAtLeast(0L)
+                info.flags = extractor.sampleFlags
+                muxer.writeSampleData(destination, buffer, info)
+                extractor.advance()
+            }
+            muxer.stop()
+            started = false
+        } catch (error: Exception) {
+            output.delete()
+            if (error.message == UserMessages.NO_AUDIO) throw error
+            throw IllegalStateException(UserMessages.NO_AUDIO, error)
+        } finally {
+            runCatching { extractor.release() }
             if (started) runCatching { muxer?.stop() }
             runCatching { muxer?.release() }
         }

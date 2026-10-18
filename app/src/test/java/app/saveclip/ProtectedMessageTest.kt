@@ -16,4 +16,12 @@ class ProtectedMessageTest {
     fun copiedLinkSuggestionIsOffUntilTheUserEnablesIt() {
         assertFalse(AppSettings().suggestCopiedLink)
     }
+
+    @Test
+    fun optionalBrowserControlsStayOff() {
+        val settings = AppSettings()
+        assertFalse(settings.desktopSite)
+        assertFalse(settings.blockAds)
+        assertFalse(settings.hintSeen)
+    }
 }

@@ -1,0 +1,9 @@
+SaveClip bundles Peter Lowe's Ad server list as an optional host block list.
+
+Source: https://pgl.yoyo.org/adservers/
+Credits: Peter Lowe — pgl@yoyo.org — https://pgl.yoyo.org/
+Upstream header in hosts.txt records the fetch date and entry count.
+
+Permission: the list page says "Feel free to combine this list with yours or lists from other sites and put it up on the web." SaveClip redistributes the hosts-format file with that attribution. It is not EasyList (EasyList is CC BY-SA 3.0 and GPL-3.0). No EasyList filter rules are included.
+
+The list is off until the user turns on ad and tracker blocking. Per-site exceptions skip the list for that page. YouTube hosts stay blocked by the built-in policy even when this list is off or a site is excepted.

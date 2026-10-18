@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import androidx.work.ForegroundInfo
 import app.saveclip.MainActivity
 import app.saveclip.R
+import app.saveclip.core.download.TransferActions
 import org.json.JSONObject
 
 object HeaderCodec {
@@ -46,22 +47,9 @@ class DownloadNotifier(private val context: Context) {
     }
 
     fun progressNotification(title: String, taskId: String, fraction: Float?, detail: String): Notification {
-        val open = PendingIntent.getActivity(
-            context,
-            0,
-            Intent(context, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val pause = PendingIntent.getBroadcast(
-            context,
-            taskId.hashCode(),
-            Intent(context, DownloadActionReceiver::class.java).apply {
-                action = DownloadActionReceiver.ACTION_PAUSE
-                putExtra(DownloadActionReceiver.EXTRA_ID, taskId)
-                setPackage(context.packageName)
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val open = activityIntent(taskId.hashCode() + 1, TransferActions.OPEN)
+        val pause = broadcastIntent(taskId.hashCode() + 2, DownloadActionReceiver.ACTION_PAUSE, taskId)
+        val cancel = broadcastIntent(taskId.hashCode() + 3, TransferActions.CANCEL, taskId)
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_download)
             .setContentTitle(title)
@@ -71,6 +59,8 @@ class DownloadNotifier(private val context: Context) {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(open)
             .addAction(0, context.getString(R.string.notif_pause), pause)
+            .addAction(0, context.getString(R.string.notif_cancel), cancel)
+            .addAction(0, context.getString(R.string.notif_open), open)
         if (fraction == null) {
             builder.setProgress(0, 0, true)
         } else {
@@ -117,6 +107,28 @@ class DownloadNotifier(private val context: Context) {
 
     private fun notify(id: Int, notification: Notification) {
         manager.notify(id, notification)
+    }
+
+    private fun activityIntent(requestCode: Int, action: String): PendingIntent {
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            Intent(context, MainActivity::class.java).apply { this.action = action },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun broadcastIntent(requestCode: Int, action: String, taskId: String): PendingIntent {
+        return PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            Intent(context, DownloadActionReceiver::class.java).apply {
+                this.action = action
+                putExtra(DownloadActionReceiver.EXTRA_ID, taskId)
+                setPackage(context.packageName)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     fun asForeground(notification: Notification): ForegroundInfo {

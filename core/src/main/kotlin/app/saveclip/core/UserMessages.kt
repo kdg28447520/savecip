@@ -4,6 +4,8 @@ object UserMessages {
     const val PROTECTED = "보호된 영상은 받을 수 없어요"
     const val YOUTUBE = "유튜브는 지원하지 않아요"
     const val EXECUTABLE = "실행 파일은 받지 않아요"
+    const val RIGHTS = "권리자 요청으로 이 주소는 열 수 없어요"
+    const val NO_AUDIO = "음성 트랙이 없어요"
     const val REMUX_FAILED = "영상을 저장 형식으로 바꾸지 못했어요"
     const val BAD_URL = "http 또는 https 주소만 열 수 있어요"
     const val ANALYZE_FAILED = "영상을 분석하지 못했어요. 주소를 확인하고 다시 시도해 주세요."

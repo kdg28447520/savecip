@@ -8,7 +8,10 @@ import app.saveclip.AppContainer
 import app.saveclip.R
 import app.saveclip.core.BrowserProfile
 import app.saveclip.core.UserMessages
+import app.saveclip.core.audio.AudioSave
 import app.saveclip.core.detect.MediaKind
+import app.saveclip.core.download.Delivery
+import app.saveclip.core.policy.RightsBlockedException
 import app.saveclip.core.download.DownloadMergePipeline
 import app.saveclip.core.download.ParallelRangeDownloader
 import app.saveclip.core.download.TransferProgress
@@ -20,7 +23,9 @@ import app.saveclip.core.policy.YouTubeBlockedException
 import app.saveclip.data.DownloadDao
 import app.saveclip.data.DownloadEntity
 import app.saveclip.data.DownloadStatuses
+import app.saveclip.storage.AudioStore
 import app.saveclip.storage.FileNames
+import app.saveclip.storage.ImageStore
 import app.saveclip.storage.MediaStoreSaver
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
@@ -87,6 +92,8 @@ class DownloadSession(
             fail(dao, notifier, taskId, task.title, UserMessages.YOUTUBE)
         } catch (executable: ExecutableBlockedException) {
             fail(dao, notifier, taskId, task.title, UserMessages.EXECUTABLE)
+        } catch (rights: RightsBlockedException) {
+            fail(dao, notifier, taskId, task.title, UserMessages.RIGHTS)
         } catch (error: Exception) {
             val message = (error.message ?: "받지 못했어요").take(180)
             dao.markFailed(taskId, message)
@@ -148,10 +155,14 @@ class DownloadSession(
                 }
             }
             try {
-                outputUri = when (MediaKind.valueOf(task.kind)) {
-                    MediaKind.WEBM, MediaKind.PROGRESSIVE_MP4 -> saveDirect(pipeline, task, work, headers, parallelism, channel)
-                    MediaKind.HLS -> saveHls(pipeline, task, work, headers, parallelism, channel)
-                    MediaKind.DASH -> saveDash(pipeline, task, work, headers, parallelism, channel)
+                outputUri = if (Delivery.normalize(task.delivery) == Delivery.IMAGE) {
+                    saveImage(pipeline, task, work, headers, channel)
+                } else {
+                    when (MediaKind.valueOf(task.kind)) {
+                        MediaKind.WEBM, MediaKind.PROGRESSIVE_MP4 -> saveDirect(pipeline, task, work, headers, parallelism, channel)
+                        MediaKind.HLS -> saveHls(pipeline, task, work, headers, parallelism, channel)
+                        MediaKind.DASH -> saveDash(pipeline, task, work, headers, parallelism, channel)
+                    }
                 }
             } finally {
                 channel.close()
@@ -186,10 +197,23 @@ class DownloadSession(
         }
         val mime = if (webm) "video/webm" else "video/mp4"
         val extension = if (webm) "webm" else "mp4"
-        return MediaStoreSaver.save(
+        return storeProduced(task, output, work, mime, extension)
+    }
+
+    private suspend fun saveImage(
+        pipeline: DownloadMergePipeline,
+        task: DownloadEntity,
+        work: File,
+        headers: Map<String, String>,
+        channel: Channel<TransferProgress>,
+    ): Uri {
+        val dest = File(work, "image.bin")
+        pipeline.downloadDirect(task.mediaUrl, dest, headers, connections = 1) { channel.trySend(it) }
+        val mime = ImageStore.mimeFor(task.mediaUrl)
+        return ImageStore.save(
             context,
-            output,
-            FileNames.displayName(task.title, extension),
+            dest,
+            FileNames.displayName(task.title, ImageStore.extensionFor(mime)),
             mime,
         )
     }
@@ -221,12 +245,7 @@ class DownloadSession(
                 throw error
             }
         }
-        return MediaStoreSaver.save(
-            context,
-            file,
-            FileNames.displayName(task.title, "mp4"),
-            "video/mp4",
-        )
+        return storeProduced(task, file, work, "video/mp4", "mp4")
     }
 
     private suspend fun saveDash(
@@ -248,19 +267,24 @@ class DownloadSession(
         ) { channel.trySend(it) }
         val remuxed = File(work, "out.mp4")
         AndroidRemuxer.remux(listOfNotNull(result.video, result.audio), remuxed)
-        return MediaStoreSaver.save(
-            context,
-            remuxed,
-            FileNames.displayName(task.title, "mp4"),
-            "video/mp4",
-        )
+        return storeProduced(task, remuxed, work, "video/mp4", "mp4")
     }
 
-    private fun requestHeaders(task: DownloadEntity): Map<String, String> {
+    private fun storeProduced(task: DownloadEntity, file: File, work: File, mime: String, extension: String): Uri {
+        if (Delivery.normalize(task.delivery) == Delivery.AUDIO) {
+            val audio = File(work, "audio.m4a")
+            AndroidRemuxer.extractAudio(file, audio)
+            return AudioStore.save(context, audio, FileNames.displayName(task.title, AudioSave.EXTENSION))
+        }
+        return MediaStoreSaver.save(context, file, FileNames.displayName(task.title, extension), mime)
+    }
+
+    private suspend fun requestHeaders(task: DownloadEntity): Map<String, String> {
         val headers = HeaderCodec.decode(task.headersJson).toMutableMap()
         val cookie = runCatching { CookieManager.getInstance().getCookie(task.mediaUrl) }.getOrNull()
         if (!cookie.isNullOrBlank()) headers["Cookie"] = cookie
-        headers.putIfAbsent("User-Agent", BrowserProfile.USER_AGENT)
+        val desktop = runCatching { container.settings.current().desktopSite }.getOrDefault(false)
+        headers.putIfAbsent("User-Agent", BrowserProfile.userAgent(desktop))
         if (task.pageUrl.startsWith("http")) headers.putIfAbsent("Referer", task.pageUrl)
         return headers
     }

@@ -63,6 +63,43 @@ fun MarkFilm(color: Color, modifier: Modifier = Modifier) {
 }
 
 @Composable
+fun MarkAlert(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(22.dp)) {
+        drawCircle(color, style = Stroke(width = 2.dp.toPx()))
+        drawLine(
+            color,
+            Offset(size.width * 0.5f, size.height * 0.28f),
+            Offset(size.width * 0.5f, size.height * 0.58f),
+            2.dp.toPx(),
+            StrokeCap.Round,
+        )
+        drawCircle(color, radius = 1.6.dp.toPx(), center = Offset(size.width * 0.5f, size.height * 0.74f))
+    }
+}
+
+@Composable
+fun MarkLock(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(22.dp)) {
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(size.width * 0.22f, size.height * 0.42f),
+            size = Size(size.width * 0.56f, size.height * 0.4f),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx()),
+            style = Stroke(width = 2.dp.toPx()),
+        )
+        drawArc(
+            color = color,
+            startAngle = 200f,
+            sweepAngle = 140f,
+            useCenter = false,
+            topLeft = Offset(size.width * 0.3f, size.height * 0.16f),
+            size = Size(size.width * 0.4f, size.height * 0.36f),
+            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+        )
+    }
+}
+
+@Composable
 fun MarkSliders(color: Color, modifier: Modifier = Modifier) {
     Canvas(modifier.size(22.dp)) {
         val ys = listOf(0.28f, 0.5f, 0.72f)

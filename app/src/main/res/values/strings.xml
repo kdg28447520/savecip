@@ -8,4 +8,6 @@
     <string name="notif_pause">일시정지</string>
     <string name="notif_done">저장했습니다</string>
     <string name="notif_failed">받지 못했습니다</string>
+    <string name="notif_cancel">취소</string>
+    <string name="notif_open">열기</string>
 </resources>
