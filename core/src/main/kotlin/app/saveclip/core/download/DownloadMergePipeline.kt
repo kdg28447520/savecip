@@ -52,10 +52,18 @@ class DownloadMergePipeline(
         url: String,
         dest: File,
         headers: Map<String, String> = emptyMap(),
+        connections: Int = 4,
+        minParallelBytes: Long = ParallelRangeDownloader.MIN_BYTES,
         progress: (TransferProgress) -> Unit = {},
     ): File {
         DownloadGuard.checkUrl(url)
-        http.download(url, dest, headers) { done, total ->
+        ParallelRangeDownloader(http).download(
+            url = url,
+            dest = dest,
+            headers = headers,
+            connections = connections,
+            minBytes = minParallelBytes,
+        ) { done, total ->
             progress(TransferProgress(done, total, if (total != null && done >= total) 1 else 0, 1))
         }
         return dest

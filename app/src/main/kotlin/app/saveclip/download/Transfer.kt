@@ -38,14 +38,14 @@ class DownloadNotifier(private val context: Context) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 context.getString(R.string.channel_name),
-                NotificationManager.IMPORTANCE_LOW,
+                NotificationManager.IMPORTANCE_DEFAULT,
             )
             channel.description = context.getString(R.string.channel_desc)
             manager.createNotificationChannel(channel)
         }
     }
 
-    fun progressInfo(title: String, taskId: String, fraction: Float?, detail: String): ForegroundInfo {
+    fun progressNotification(title: String, taskId: String, fraction: Float?, detail: String): Notification {
         val open = PendingIntent.getActivity(
             context,
             0,
@@ -68,6 +68,7 @@ class DownloadNotifier(private val context: Context) {
             .setContentText(detail.ifBlank { context.getString(R.string.notif_running) })
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(open)
             .addAction(0, context.getString(R.string.notif_pause), pause)
         if (fraction == null) {
@@ -75,7 +76,11 @@ class DownloadNotifier(private val context: Context) {
         } else {
             builder.setProgress(100, (fraction * 100).toInt().coerceIn(0, 100), false)
         }
-        return foreground(builder.build())
+        return builder.build()
+    }
+
+    fun progressInfo(title: String, taskId: String, fraction: Float?, detail: String): ForegroundInfo {
+        return asForeground(progressNotification(title, taskId, fraction, detail))
     }
 
     fun done(title: String) {
@@ -114,7 +119,7 @@ class DownloadNotifier(private val context: Context) {
         manager.notify(id, notification)
     }
 
-    private fun foreground(notification: Notification): ForegroundInfo {
+    fun asForeground(notification: Notification): ForegroundInfo {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ForegroundInfo(PROGRESS_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {

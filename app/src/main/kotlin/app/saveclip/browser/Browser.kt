@@ -13,12 +13,16 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.lifecycle.AndroidViewModel
+import androidx.webkit.ServiceWorkerClientCompat
+import androidx.webkit.ServiceWorkerControllerCompat
+import androidx.webkit.WebViewFeature
 import androidx.lifecycle.viewModelScope
 import app.saveclip.AppContainer
 import app.saveclip.core.BrowserProfile
 import app.saveclip.core.UserMessages
 import app.saveclip.core.detect.MediaClassifier
 import app.saveclip.core.detect.MediaKind
+import app.saveclip.core.net.SharedLinks
 import app.saveclip.core.extract.ExtractResult
 import app.saveclip.core.extract.MediaRequestGate
 import app.saveclip.core.extract.RequestDecision
@@ -145,6 +149,11 @@ class BrowserViewModel(
     val loadingChoice = loadingChoiceFlow.asStateFlow()
     private val analyzingFlow = MutableStateFlow(false)
     val analyzing = analyzingFlow.asStateFlow()
+    private val clipboardSuggestionFlow = MutableStateFlow<String?>(null)
+    val clipboardSuggestion = clipboardSuggestionFlow.asStateFlow()
+    private var hiddenClipboardUrl: String? = null
+    private val interceptActive = AtomicBoolean(true)
+    private val workerInstalled = AtomicBoolean(false)
 
     var webView: WebView? = null
         private set
@@ -175,6 +184,7 @@ class BrowserViewModel(
         }
         created.addJavascriptInterface(MediaJsBridge(::onBridgeReport, ::onProtected), "SaveClipBridge")
         created.webViewClient = SaveClipWebViewClient(this)
+        installServiceWorker()
         created.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 progressFlow.value = newProgress
@@ -305,7 +315,13 @@ class BrowserViewModel(
                 return
             }
             if (!url.startsWith("http://") && !url.startsWith("https://")) return
-            val kind = MediaClassifier.classify(url, mime) ?: return
+            val kind = MediaClassifier.classify(url, mime)
+            if (kind == null) {
+                if (MediaClassifier.worthProbing(url, mime)) {
+                    scheduleProbe(url, pageUrl, headerMap(pageUrl, url))
+                }
+                return
+            }
             if (app.saveclip.core.policy.ExecutableGuard.isBlockedUrl(url)) return
             val title = pageTitle.ifBlank { titleFlow.value }
             val media = DetectedMedia(url, mime.orEmpty(), kind, pageUrl, title, label)
@@ -401,6 +417,106 @@ class BrowserViewModel(
         }
     }
 
+    fun onIntercept(
+        url: String,
+        pageUrl: String,
+        mainFrame: Boolean,
+        headers: Map<String, String>,
+    ): WebResourceResponse? {
+        if (!interceptActive.get()) return null
+        return try {
+            val accept = headers.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value
+            when (val decision = MediaRequestGate.inspect(url, pageUrl, mainFrame, accept)) {
+                is RequestDecision.Block -> {
+                    if (decision.youtube) onYouTube(mainFrame)
+                    blockedResponse()
+                }
+                is RequestDecision.Observe -> {
+                    onMedia(decision.url, null, decision.pageUrl, title.value)
+                    null
+                }
+                is RequestDecision.Probe -> {
+                    scheduleProbe(decision.url, decision.pageUrl, headers)
+                    null
+                }
+                RequestDecision.Allow -> null
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    fun considerClipboard(text: String?) {
+        viewModelScope.launch {
+            val enabled = runCatching { container.settings.current().suggestCopiedLink }.getOrDefault(false)
+            if (!enabled || text.isNullOrBlank()) {
+                clipboardSuggestionFlow.value = null
+                return@launch
+            }
+            val url = SharedLinks.firstHttpUrl(text)
+            if (url == null || YouTubeBlocklist.isBlocked(url) || url == hiddenClipboardUrl || url == addressFlow.value) {
+                clipboardSuggestionFlow.value = null
+                return@launch
+            }
+            clipboardSuggestionFlow.value = url
+        }
+    }
+
+    fun openClipboardSuggestion() {
+        val url = clipboardSuggestionFlow.value ?: return
+        hiddenClipboardUrl = url
+        clipboardSuggestionFlow.value = null
+        submit(url)
+    }
+
+    fun dismissClipboardSuggestion() {
+        hiddenClipboardUrl = clipboardSuggestionFlow.value
+        clipboardSuggestionFlow.value = null
+    }
+
+    fun headersFor(request: WebResourceRequest, pageUrl: String, mediaUrl: String): Map<String, String> {
+        val headers = headerMap(pageUrl, mediaUrl).toMutableMap()
+        val incoming = runCatching { request.requestHeaders }.getOrNull().orEmpty()
+        for ((key, value) in incoming) {
+            if (value.isBlank()) continue
+            if (key.equals("Range", true) || key.equals("Host", true) || key.equals("Connection", true)) continue
+            headers[key] = value
+        }
+        return headers
+    }
+
+    private fun scheduleProbe(url: String, pageUrl: String, headers: Map<String, String>) {
+        if (!interceptActive.get() || protectedPage.get()) return
+        if (YouTubeBlocklist.isBlocked(url) || YouTubeBlocklist.isBlocked(pageUrl)) {
+            onYouTube(false)
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val kind = container.probe.classify(url, headers) ?: return@launch
+                onMedia(url, MediaClassifier.mimeOf(kind), pageUrl, titleFlow.value)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // A failed peek must not surface as a crash.
+            }
+        }
+    }
+
+    private fun installServiceWorker() {
+        if (!workerInstalled.compareAndSet(false, true)) return
+        runCatching {
+            if (!WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)) return
+            ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(object : ServiceWorkerClientCompat() {
+                override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? {
+                    val url = request.url?.toString().orEmpty()
+                    val page = pageSnapshot()
+                    return onIntercept(url, page, false, headersFor(request, page, url))
+                }
+            })
+        }
+    }
+
     private fun onBridgeReport(json: String) {
         try {
             val obj = runCatching { JSONObject(json) }.getOrNull() ?: return
@@ -430,6 +546,7 @@ class BrowserViewModel(
     }
 
     override fun onCleared() {
+        interceptActive.set(false)
         webView?.destroy()
         webView = null
     }
@@ -472,22 +589,9 @@ private class SaveClipWebViewClient(
     }
 
     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-        return try {
-            val url = request.url?.toString().orEmpty()
-            when (val decision = MediaRequestGate.inspect(url, model.pageSnapshot(), request.isForMainFrame)) {
-                is RequestDecision.Block -> {
-                    if (decision.youtube) model.onYouTube(request.isForMainFrame)
-                    blocked()
-                }
-                is RequestDecision.Observe -> {
-                    model.onMedia(decision.url, null, decision.pageUrl, model.title.value)
-                    null
-                }
-                RequestDecision.Allow -> null
-            }
-        } catch (_: Throwable) {
-            null
-        }
+        val url = request.url?.toString().orEmpty()
+        val page = model.pageSnapshot()
+        return model.onIntercept(url, page, request.isForMainFrame, model.headersFor(request, page, url))
     }
 
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
@@ -502,16 +606,17 @@ private class SaveClipWebViewClient(
         model.syncBack()
     }
 
-    private fun blocked(): WebResourceResponse {
-        return WebResourceResponse(
-            "text/plain",
-            "utf-8",
-            403,
-            "Blocked",
-            emptyMap(),
-            ByteArrayInputStream(ByteArray(0)),
-        )
-    }
+}
+
+private fun blockedResponse(): WebResourceResponse {
+    return WebResourceResponse(
+        "text/plain",
+        "utf-8",
+        403,
+        "Blocked",
+        emptyMap(),
+        ByteArrayInputStream(ByteArray(0)),
+    )
 }
 
 fun kindLabel(kind: MediaKind): String = when (kind) {

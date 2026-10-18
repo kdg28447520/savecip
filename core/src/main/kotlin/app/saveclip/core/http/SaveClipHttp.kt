@@ -1,6 +1,7 @@
 package app.saveclip.core.http
 
 import app.saveclip.core.BrowserProfile
+import app.saveclip.core.detect.MediaClassifier
 import app.saveclip.core.hls.ByteRange
 import app.saveclip.core.policy.DownloadGuard
 import app.saveclip.core.policy.ExecutableGuard
@@ -13,6 +14,7 @@ import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -21,6 +23,17 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
 
 class HttpStatusException(val code: Int, val url: String) : IOException("HTTP $code")
+
+class RangeRejectedException(url: String) : IOException("range rejected $url")
+
+data class ResourceSnapshot(
+    val finalUrl: String,
+    val status: Int,
+    val contentType: String?,
+    val totalBytes: Long?,
+    val rangesAccepted: Boolean,
+    val prefix: ByteArray,
+)
 
 data class TextPeek(
     val finalUrl: String,
@@ -77,11 +90,61 @@ class SaveClipHttp(base: OkHttpClient = OkHttpClient()) {
         }
     }
 
+    /**
+     * HEAD first. When the type, length, or range support is still unknown,
+     * reads at most the first kilobyte with `Range: bytes=0-1023` and closes
+     * the body so a full file is not pulled just to classify it.
+     */
+    suspend fun inspect(url: String, headers: Map<String, String> = emptyMap()): ResourceSnapshot =
+        withContext(Dispatchers.IO) {
+            var finalUrl = url
+            var contentType: String? = null
+            var total: Long? = null
+            var headerSaysRanges = false
+            val head = runCatching { execute(url, headers, null, method = "HEAD") }.getOrNull()
+            if (head != null) {
+                head.use { response ->
+                    finalUrl = response.request.url.toString()
+                    if (response.isSuccessful) {
+                        contentType = response.header("Content-Type")
+                        total = response.header("Content-Length")?.toLongOrNull()?.takeIf { it >= 0 }
+                        headerSaysRanges = response.header("Accept-Ranges")
+                            ?.contains("bytes", ignoreCase = true) == true
+                    }
+                }
+            }
+            val typeKnown = MediaClassifier.classifyContent(contentType, ByteArray(0)) != null
+            if (typeKnown && total != null && headerSaysRanges) {
+                return@withContext ResourceSnapshot(finalUrl, 200, contentType, total, true, ByteArray(0))
+            }
+            execute(finalUrl, headers, "bytes=0-1023").use { response ->
+                if (response.code >= 400) throw HttpStatusException(response.code, finalUrl)
+                val prefix = readPrefix(response, 1024)
+                val ranged = response.code == 206
+                val length = contentRangeTotal(response.header("Content-Range"))
+                    ?: if (response.code == 200) {
+                        response.header("Content-Length")?.toLongOrNull()?.takeIf { it >= 0 }
+                            ?: response.body?.contentLength()?.takeIf { it >= 0 }
+                    } else {
+                        total
+                    }
+                ResourceSnapshot(
+                    finalUrl = response.request.url.toString(),
+                    status = response.code,
+                    contentType = response.header("Content-Type") ?: contentType,
+                    totalBytes = length ?: total,
+                    rangesAccepted = ranged,
+                    prefix = prefix,
+                )
+            }
+        }
+
     suspend fun download(
         url: String,
         dest: File,
         headers: Map<String, String> = emptyMap(),
         range: ByteRange? = null,
+        strictRange: Boolean = false,
         onBytes: (done: Long, total: Long?) -> Unit = { _, _ -> },
     ): Long = withContext(Dispatchers.IO) {
         dest.parentFile?.mkdirs()
@@ -108,6 +171,9 @@ class SaveClipHttp(base: OkHttpClient = OkHttpClient()) {
                     movePartial(partial, dest)
                     onBytes(dest.length(), dest.length())
                     return@withContext dest.length()
+                }
+                if (range != null && strictRange && resp.code != 206) {
+                    throw RangeRejectedException(url)
                 }
                 if (!resp.isSuccessful) throw HttpStatusException(resp.code, url)
                 val append = resp.code == 206 && existing > 0
@@ -147,6 +213,7 @@ class SaveClipHttp(base: OkHttpClient = OkHttpClient()) {
         url: String,
         headers: Map<String, String>,
         rangeHeader: String?,
+        method: String = "GET",
         onCall: (Call) -> Unit = {},
     ): Response {
         var currentUrl = url
@@ -154,6 +221,7 @@ class SaveClipHttp(base: OkHttpClient = OkHttpClient()) {
         while (true) {
             DownloadGuard.checkUrl(currentUrl)
             val builder = Request.Builder().url(currentUrl)
+            if (method.equals("HEAD", ignoreCase = true)) builder.head()
             applyHeaders(builder, headers)
             if (rangeHeader != null) builder.header("Range", rangeHeader)
             val request = builder.build()
@@ -215,6 +283,29 @@ class SaveClipHttp(base: OkHttpClient = OkHttpClient()) {
             partial.copyTo(dest, overwrite = true)
             partial.delete()
         }
+    }
+
+    private fun readPrefix(response: Response, max: Int): ByteArray {
+        val body = response.body ?: return ByteArray(0)
+        body.byteStream().use { input ->
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(256)
+            var remaining = max
+            while (remaining > 0) {
+                val read = input.read(buffer, 0, minOf(buffer.size, remaining))
+                if (read < 0) break
+                out.write(buffer, 0, read)
+                remaining -= read
+            }
+            return out.toByteArray()
+        }
+    }
+
+    private fun contentRangeTotal(header: String?): Long? {
+        if (header.isNullOrBlank()) return null
+        val total = header.substringAfter("/", "").trim()
+        if (total.isEmpty() || total == "*") return null
+        return total.toLongOrNull()?.takeIf { it >= 0 }
     }
 
     private fun isRedirect(code: Int): Boolean = code == 301 || code == 302 || code == 303 || code == 307 || code == 308

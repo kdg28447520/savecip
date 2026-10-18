@@ -6,14 +6,16 @@
 
 ## 기능
 
-- 주소창이 있는 앱 안 브라우저. `shouldInterceptRequest`로 mp4, webm, m3u8, mpd(확장자와 MIME)를 보고, 주입한 스크립트가 `<video>` / `<source>`의 src를 페이지 주소 기준으로 절대 경로로 바꿉니다.
+- 주소창이 있는 앱 안 브라우저. `shouldInterceptRequest`로 mp4, webm, m3u8, mpd(확장자와 MIME)를 보고, 주입한 스크립트가 `<video>` / `<source>`의 src를 페이지 주소 기준으로 절대 경로로 바꿉니다. 확장자가 없는 주소는 경로·쿼리·Accept가 미디어로 보일 때만 HEAD 또는 1KB `Range`로 Content-Type과 앞바이트(`#EXTM3U`, `<MPD`, `ftyp`)를 확인합니다.
+- Service Worker 요청도 `ServiceWorkerControllerCompat`으로 같은 판별과 유튜브 차단을 통과합니다.
 - 감지 목록이 있는 받기 버튼. HLS·DASH는 화질을 고를 수 있습니다.
-- 직접 mp4/webm은 OkHttp로 받고, User-Agent, Referer, WebView 쿠키를 붙입니다. `Range`로 이어받습니다.
+- 직접 mp4/webm은 OkHttp로 받고, User-Agent, Referer, WebView 쿠키를 붙입니다. 큰 파일은 3–6개 `Range` 연결로 나누고, 서버가 구간을 무시하면(200) 연결 하나로 되돌립니다. 일시정지 뒤 이어받기는 구간 파일과 단일 `.part`를 그대로 사용합니다.
 - HLS는 마스터/미디어 재생목록을 읽고, 조각을 동시에(기본 4, 설정 1–6) 받은 뒤 TS 또는 fMP4를 이어 붙입니다. 기기에서는 `MediaExtractor` / `MediaMuxer`로 mp4에 담습니다.
 - DASH는 MPD에서 영상·음성 트랙을 고르고, 초기화 세그먼트와 미디어 세그먼트를 받아 같은 방식으로 합칩니다.
-- 큐는 WorkManager와 `dataSync` 포그라운드 서비스로 진행률을 알리고, 일시정지·이어받기·재시도를 지원합니다.
+- 큐는 일시정지·이어받기·재시도를 지원합니다. Android 14 이상은 사용자가 시작한 데이터 전송 작업(`JobScheduler.setUserInitiated`, `RUN_USER_INITIATED_JOBS`)으로 긴 받기를 돌리고, 그 미만은 WorkManager와 `dataSync` 포그라운드 서비스를 유지합니다.
+- 다른 앱의 공유(`ACTION_SEND` text/plain)와 링크 열기(`ACTION_VIEW` http/https)는 주소창으로 들어옵니다. 복사한 링크 제안은 설정에서 켠 경우에만 클립보드를 읽으며, 기본값은 꺼짐입니다.
 - 저장은 MediaStore `IS_PENDING`을 거쳐 `Movies/SaveClip`에 넣고, 보관함에서 Media3 ExoPlayer로 재생합니다.
-- 설정에서 Wi-Fi(비과금 네트워크)만 받기, 동시 조각 수를 바꿉니다.
+- 설정에서 Wi-Fi(비과금 네트워크)만 받기, 동시 조각 수, 복사한 링크 제안을 바꿉니다.
 - 주소 분석. `m.naver.com/shorts`, `clip.naver.com`, `naver.me`, `tv.naver.com` 클립은 공개 카드 API의 점진적 MP4(또는 보호되지 않은 HLS)만 고릅니다. Widevine 등 보호된 재생 정보는 받지 않습니다.
 - 분석이 실패해도 앱은 닫히지 않고 한국어 안내를 보여 줍니다. 처리되지 않은 예외는 마지막 오류 기록으로 남기고 설정에서 공유할 수 있습니다.
 
@@ -29,8 +31,8 @@
 받기 흐름은 이렇습니다.
 
 1. WebView가 미디어 주소를 모읍니다.
-2. 정책 검사 후 Room에 작업을 넣고 WorkManager에 올립니다.
-3. 워커가 포그라운드 알림을 띄운 뒤 `:core` 파이프라인으로 파일을 받습니다.
+2. 정책 검사 후 Room에 작업을 넣습니다. Android 14 이상은 사용자 시작 전송 작업으로, 그 이하는 WorkManager로 올립니다.
+3. 전송이 진행 알림을 띄운 뒤 `:core` 파이프라인으로 파일을 받습니다.
 4. TS·분할 MP4·분리된 음성은 `AndroidRemuxer`가 mp4로 옮깁니다. 분할 MP4 재다중화가 실패하면 재생 가능한 fMP4를 그대로 저장합니다.
 5. MediaStore에 확정(`IS_PENDING` 해제)하고 임시 파일을 지웁니다.
 
@@ -82,7 +84,7 @@ JVM에서 확인합니다.
 - DRM을 우회하지 않습니다. Widevine·PlayReady·FairPlay·SAMPLE-AES·AES-128·`ContentProtection`·`#EXT-X-KEY`는 받지 않습니다. 이런 우회는 DMCA와 국내 저작권법상 기술적 보호조치 무력화에 해당할 수 있습니다.
 - Play의 지적재산권 정책은 이용자가 권리를 가진 콘텐츠만 받도록 요구합니다. 권한 없는 복제·배포를 돕는 앱은 거절될 수 있습니다.
 - 계정, 자체 서버, 추적 SDK가 없습니다. 요청은 사용자가 연 페이지와 그 미디어 주소로만 나갑니다.
-- Android 15의 `dataSync` 포그라운드 서비스는 하루 사용 시간에 제한이 있습니다. 매우 긴 수신은 시스템 제한을 받을 수 있습니다.
+- Android 15의 `dataSync` 포그라운드 서비스는 하루 사용 시간에 제한이 있습니다. Android 14 이상에서 사용자가 누른 받기는 사용자 시작 데이터 전송 작업으로 이 제한 밖입니다. 그 작업 등록이 거절되면 WorkManager로 넘깁니다.
 
 ## 한계
 

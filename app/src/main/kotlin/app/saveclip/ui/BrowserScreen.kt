@@ -1,6 +1,7 @@
 package app.saveclip.ui
 
 import android.Manifest
+import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.os.Build
 import android.view.ViewGroup
@@ -39,6 +40,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,11 +56,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.saveclip.LocalContainer
 import app.saveclip.browser.BrowserViewModel
+import app.saveclip.data.AppSettings
 import app.saveclip.browser.DetectedMedia
 import app.saveclip.browser.fileLabel
 import app.saveclip.browser.kindLabel
@@ -77,6 +84,9 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
     val selected by model.selected.collectAsState()
     val loadingChoice by model.loadingChoice.collectAsState()
     val analyzing by model.analyzing.collectAsState()
+    val clipboardSuggestion by model.clipboardSuggestion.collectAsState()
+    val container = LocalContainer.current
+    val settings by container.settings.settings.collectAsState(initial = AppSettings())
     var sheet by remember { mutableStateOf(false) }
     var pending by remember { mutableStateOf<DetectedMedia?>(null) }
     val context = LocalContext.current
@@ -107,6 +117,30 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                 storage.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
             else -> model.enqueue(item)
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, settings.suggestCopiedLink) {
+        fun pull() {
+            if (!settings.suggestCopiedLink) {
+                model.considerClipboard(null)
+            } else {
+                model.considerClipboard(clipboardText(context))
+            }
+        }
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) pull()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) pull()
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(container) {
+        container.incoming.pending.collect { url ->
+            if (url.isNullOrBlank()) return@collect
+            container.incoming.consume(url)
+            model.submit(url)
         }
     }
 
@@ -167,6 +201,24 @@ fun BrowserScreen(model: BrowserViewModel = browserModel()) {
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(16.dp),
                     ) { Text("이동") }
+                }
+                if (clipboardSuggestion != null) {
+                    Row(
+                        Modifier.padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(onClick = model::openClipboardSuggestion) {
+                            Text("복사한 링크 열기")
+                        }
+                        Text(
+                            clipboardHost(clipboardSuggestion.orEmpty()),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = model::dismissClipboardSuggestion) { Text("닫기") }
+                    }
                 }
             }
             if (hasPage && progress in 1..99) {
@@ -319,6 +371,19 @@ private fun DetectedRow(
             Text("받기")
         }
     }
+}
+
+private fun clipboardText(context: android.content.Context): String? {
+    val manager = context.getSystemService(ClipboardManager::class.java) ?: return null
+    if (!manager.hasPrimaryClip()) return null
+    val clip = manager.primaryClip ?: return null
+    if (clip.itemCount <= 0) return null
+    return clip.getItemAt(0).coerceToText(context)?.toString()
+}
+
+private fun clipboardHost(url: String): String {
+    val host = android.net.Uri.parse(url).host
+    return host?.takeIf { it.isNotBlank() } ?: url.take(48)
 }
 
 @Composable

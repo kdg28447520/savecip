@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
@@ -14,6 +15,7 @@ import androidx.work.workDataOf
 import app.saveclip.SaveClipApp
 import app.saveclip.UserMessageBus
 import app.saveclip.core.detect.MediaKind
+import app.saveclip.core.download.TransferPolicy
 import app.saveclip.data.DownloadDao
 import app.saveclip.data.DownloadEntity
 import app.saveclip.data.DownloadStatuses
@@ -73,7 +75,7 @@ class DownloadRepository(
 
     suspend fun pause(id: String) {
         dao.markPaused(id)
-        work.cancelUniqueWork(workName(id))
+        cancelTransfer(id)
     }
 
     suspend fun resume(id: String) {
@@ -84,18 +86,37 @@ class DownloadRepository(
     }
 
     suspend fun cancel(id: String) {
-        work.cancelUniqueWork(workName(id))
+        cancelTransfer(id)
+        UserInitiatedTransfers.forget(app, id)
         dao.delete(id)
         java.io.File(app.filesDir, "work/$id").deleteRecursively()
     }
 
     suspend fun reenqueueQueued() {
-        dao.byStatus(DownloadStatuses.QUEUED).forEach { enqueueWork(it) }
+        val pending = dao.byStatus(DownloadStatuses.QUEUED).toMutableList()
+        if (TransferPolicy.userInitiatedJob(Build.VERSION.SDK_INT)) {
+            pending += dao.byStatus(DownloadStatuses.RUNNING)
+        }
+        pending.forEach { enqueueWork(it) }
+    }
+
+    suspend fun recoverInterrupted() {
+        if (!TransferPolicy.userInitiatedJob(Build.VERSION.SDK_INT)) return
+        reenqueueQueued()
     }
 
     private suspend fun enqueueWork(entity: DownloadEntity) {
-        val current = settings.current()
-        val network = if (current.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED
+        val wifiOnly = settings.current().wifiOnly
+        if (TransferPolicy.userInitiatedJob(Build.VERSION.SDK_INT)) {
+            val scheduled = runCatching {
+                UserInitiatedTransfers.schedule(app, entity.id, wifiOnly, entity.bytesTotal)
+            }.getOrDefault(false)
+            if (scheduled) {
+                work.cancelUniqueWork(workName(entity.id))
+                return
+            }
+        }
+        val network = if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED
         val request = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setInputData(workDataOf(DownloadWorker.KEY_ID to entity.id))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(network).build())
@@ -103,6 +124,11 @@ class DownloadRepository(
             .addTag("saveclip")
             .build()
         work.enqueueUniqueWork(workName(entity.id), ExistingWorkPolicy.REPLACE, request)
+    }
+
+    private fun cancelTransfer(id: String) {
+        if (Build.VERSION.SDK_INT >= 34) UserInitiatedTransfers.cancel(app, id)
+        work.cancelUniqueWork(workName(id))
     }
 
     private fun workName(id: String) = "saveclip-$id"

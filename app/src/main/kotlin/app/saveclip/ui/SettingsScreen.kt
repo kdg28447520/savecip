@@ -53,6 +53,10 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch { container.settings.setParallelism(value) }
     }
 
+    fun setSuggestCopied(value: Boolean) {
+        viewModelScope.launch { container.settings.setSuggestCopiedLink(value) }
+    }
+
     private val crashLogFlow = MutableStateFlow(CrashStore.read(container.app))
     val crashLog = crashLogFlow.asStateFlow()
 
@@ -91,7 +95,7 @@ fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
             Column(Modifier.padding(16.dp)) {
                 Text("동시에 받을 조각 수  ${settings.parallelism}", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "HLS와 DASH 조각을 나눠 받는 개수입니다. 1에서 6까지입니다.",
+                    "HLS·DASH 조각 수입니다. 큰 단일 파일은 3에서 6개 연결로 나누고, 서버가 Range를 받지 않으면 연결 하나로 받습니다.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Slider(
@@ -100,6 +104,17 @@ fun SettingsScreen(model: SettingsViewModel = settingsModel()) {
                     valueRange = 1f..6f,
                     steps = 4,
                 )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card {
+            Column(Modifier.padding(16.dp)) {
+                Text("복사한 링크 제안", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "앱이 앞에 올 때 클립보드의 http 주소를 한 번 읽고 열지 묻습니다. 기본값은 꺼짐입니다. 켜 두면 안드로이드가 붙여넣기 알림을 띄울 수 있어요.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Switch(checked = settings.suggestCopiedLink, onCheckedChange = model::setSuggestCopied)
             }
         }
         Spacer(Modifier.height(12.dp))
